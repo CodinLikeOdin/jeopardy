@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jeopardy!</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Landing -->
+    <div id="landing" class="screen">
+      <div class="logo">JEOPARDY!</div>
+      <div class="card">
+        <input id="playerName" type="text" placeholder="Your name" maxlength="20">
+        <button class="btn btn-primary" onclick="joinAsPlayer()">Join as Player</button>
+        <button class="btn btn-secondary" onclick="joinAsHost()">Join as Host</button>
+      </div>
+    </div>
+
+    <!-- Lobby -->
+    <div id="lobby" class="screen hidden">
+      <div class="logo">JEOPARDY!</div>
+      <div id="lobbyContent"></div>
+    </div>
+
+    <!-- Category Setup (host only) -->
+    <div id="setup" class="screen hidden">
+      <div class="logo">JEOPARDY!</div>
+      <div class="card">
+        <h2>Choose 6 Categories</h2>
+        <p class="subtitle">These will be used for both rounds</p>
+        <div id="categoryInputs">
+          <input class="cat-input" type="text" placeholder="Category 1" maxlength="30">
+          <input class="cat-input" type="text" placeholder="Category 2" maxlength="30">
+          <input class="cat-input" type="text" placeholder="Category 3" maxlength="30">
+          <input class="cat-input" type="text" placeholder="Category 4" maxlength="30">
+          <input class="cat-input" type="text" placeholder="Category 5" maxlength="30">
+          <input class="cat-input" type="text" placeholder="Category 6" maxlength="30">
+        </div>
+        <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
+      </div>
+    </div>
+
+    <!-- Generating -->
+    <div id="generating" class="screen hidden">
+      <div class="logo">JEOPARDY!</div>
+      <div class="card center">
+        <div class="spinner"></div>
+        <h2>Generating Questions...</h2>
+        <p>Claude AI is writing your Jeopardy! clues</p>
+      </div>
+    </div>
+
+    <!-- Game Board -->
+    <div id="game" class="screen hidden">
+      <div id="gameHeader">
+        <div id="roundLabel"></div>
+        <div id="scoreboard"></div>
+        <div id="hostControls" class="hidden">
+          <button class="btn btn-sm" onclick="advanceRound()">Next Round →</button>
+          <button class="btn btn-sm btn-danger" onclick="resetGame()">Reset</button>
+        </div>
+      </div>
+      <div id="board"></div>
+    </div>
+
+    <!-- Question Modal -->
+    <div id="questionModal" class="modal hidden">
+      <div class="modal-content">
+        <div id="modalCategory"></div>
+        <div id="modalValue"></div>
+        <div id="modalClue"></div>
+        <div id="dailyDoubleSection" class="hidden">
+          <h3>DAILY DOUBLE!</h3>
+          <div id="wagerSection"></div>
+        </div>
+        <div id="modalAnswer" class="hidden"></div>
+        <div id="buzzers"></div>
+        <div id="hostQuestionControls" class="hidden">
+          <button class="btn btn-primary" onclick="openBuzzers()">Open Buzzers</button>
+          <button class="btn btn-secondary" onclick="closeBuzzers()">Close Buzzers</button>
+          <button class="btn" onclick="skipQuestion()">Skip</button>
+          <div id="playerAwardButtons"></div>
+        </div>
+        <div id="playerBuzzSection">
+          <button id="buzzBtn" class="buzz-btn hidden" onclick="buzz()">BUZZ IN</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game Over -->
+    <div id="gameover" class="screen hidden">
+      <div class="logo">JEOPARDY!</div>
+      <div class="card center">
+        <h2>Final Scores</h2>
+        <div id="finalScores"></div>
+        <button class="btn btn-primary" onclick="resetGame()">Play Again</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
