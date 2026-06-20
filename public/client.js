@@ -91,13 +91,7 @@ function renderLobby() {
     <div class="player-list">
       ${players.map(p => `<div class="player-chip" style="background:${p.color}">${escHtml(p.name)}</div>`).join('')}
     </div>
-    ${isHost ? `<div style="margin-top:24px"><button class="btn btn-primary" onclick="startSetup()">Set Up Game</button></div>` : ''}
   `;
-}
-
-function startSetup() {
-  state.phase = 'setup';
-  render();
 }
 
 function renderGame() {
@@ -110,11 +104,14 @@ function renderGame() {
 
   // Scoreboard
   const players = Object.values(state.players || {});
-  document.getElementById('scoreboard').innerHTML = players
-    .filter(p => !p.disconnected)
-    .sort((a,b) => b.score - a.score)
-    .map(p => `<div class="score-chip" style="background:${p.color}">${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
-    .join('');
+  const controlPlayer = state.boardControl ? state.players[state.boardControl] : null;
+  document.getElementById('scoreboard').innerHTML =
+    (controlPlayer ? `<div class="control-chip" style="border-color:${controlPlayer.color}">🎯 ${escHtml(controlPlayer.name)}</div>` : '') +
+    players
+      .filter(p => !p.disconnected)
+      .sort((a,b) => b.score - a.score)
+      .map(p => `<div class="score-chip" style="background:${p.color}">${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
+      .join('');
 
   // Host controls
   const hc = document.getElementById('hostControls');
@@ -201,22 +198,20 @@ function renderQuestionModal() {
     ddSection.classList.add('hidden');
   }
 
-  // Buzzers display
+  // Buzzers display — show only the first (winning) buzzer
   const buzzersEl = document.getElementById('buzzers');
   if (state.buzzers && state.buzzers.length > 0) {
-    const medals = ['🥇','🥈','🥉'];
-    buzzersEl.innerHTML = state.buzzers.map((b, i) => {
-      const player = state.players[b.id];
-      const color = player ? player.color : '#888';
-      const time = new Date(b.clientTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-      const ms = b.clientTimestamp % 1000;
-      return `
-        <div class="buzzer-entry" style="background:${color}">
-          <span><span class="place">${medals[i] || (i+1)}</span>${escHtml(b.name)}</span>
-          <span class="buzz-time">${time}.${String(ms).padStart(3,'0')}</span>
-        </div>
-      `;
-    }).join('');
+    const b = state.buzzers[0];
+    const player = state.players[b.id];
+    const color = player ? player.color : '#888';
+    const time = new Date(b.clientTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const ms = b.clientTimestamp % 1000;
+    buzzersEl.innerHTML = `
+      <div class="buzzer-entry" style="background:${color}">
+        <span><span class="place">🥇</span>${escHtml(b.name)}</span>
+        <span class="buzz-time">${time}.${String(ms).padStart(3,'0')}</span>
+      </div>
+    `;
   } else {
     buzzersEl.innerHTML = '';
   }

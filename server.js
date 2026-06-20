@@ -15,20 +15,21 @@ const client = new Anthropic();
 
 // Game state
 let gameState = {
-  phase: 'lobby', // lobby, setup, single, double, gameover
+  phase: 'lobby', // lobby, setup, generating, single, double, gameover
   players: {},    // id -> { name, score, color }
-  categories: [], // array of category names (6)
+  categories: [], // array of category names
   board: {
-    single: null, // { categoryName: [q1..q5] }
+    single: null,
     double: null,
   },
-  currentQuestion: null, // { category, valueIndex, question, answer, isDailyDouble }
-  buzzers: [],           // [{ id, name, timestamp }] sorted
+  currentQuestion: null,
+  buzzers: [],           // [{ id, name, clientTimestamp, serverTimestamp }]
   buzzOpen: false,
-  dailyDoubles: [],      // [{round, cat, valueIndex}]
+  dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
-  usedSquares: { single: {}, double: {} }, // 'cat|idx' -> true
+  boardControl: null,    // playerId who has control of the board
+  usedSquares: { single: {}, double: {} },
 };
 
 function resetGame() {
@@ -43,6 +44,7 @@ function resetGame() {
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
+    boardControl: null,
     usedSquares: { single: {}, double: {} },
   };
 }
@@ -118,6 +120,7 @@ io.on('connection', (socket) => {
   socket.on('join', ({ name, isHost }) => {
     if (isHost) {
       gameState.hostId = socket.id;
+      gameState.phase = 'setup';
     }
     const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
     const usedColors = Object.values(gameState.players).map(p => p.color);
@@ -229,13 +232,13 @@ io.on('connection', (socket) => {
     if (gameState.players[playerId]) {
       gameState.players[playerId].score += correct ? value : -value;
     }
-    if (!correct) {
-      // remove this player from buzzers so next can answer
-      gameState.buzzers = gameState.buzzers.filter(b => b.id !== playerId);
-    } else {
-      gameState.currentQuestion = null;
-      gameState.buzzOpen = false;
+    if (correct) {
+      gameState.boardControl = playerId;
     }
+    // Either way: question ends after the first buzzer is judged
+    gameState.currentQuestion = null;
+    gameState.buzzOpen = false;
+    gameState.buzzers = [];
     broadcastState();
   });
 
@@ -260,6 +263,7 @@ io.on('connection', (socket) => {
       gameState.currentQuestion = null;
       gameState.buzzers = [];
       gameState.buzzOpen = false;
+      // boardControl carries over into double jeopardy
     } else if (gameState.phase === 'double') {
       gameState.phase = 'gameover';
     }

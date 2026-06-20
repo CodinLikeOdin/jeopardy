@@ -134,6 +134,16 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   color: #000;
 }
 
+.control-chip {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-weight: bold;
+  font-size: 0.85rem;
+  color: #fff;
+  background: rgba(0,0,0,0.5);
+  border: 2px solid;
+}
+
 #hostControls { display: flex; gap: 8px; align-items: center; }
 
 /* Board */
