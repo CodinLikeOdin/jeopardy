@@ -120,7 +120,7 @@ io.on('connection', (socket) => {
   socket.on('join', ({ name, isHost }) => {
     if (isHost) {
       gameState.hostId = socket.id;
-      gameState.phase = 'setup';
+      if (gameState.phase === 'lobby') gameState.phase = 'setup';
     }
     const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
     const usedColors = Object.values(gameState.players).map(p => p.color);

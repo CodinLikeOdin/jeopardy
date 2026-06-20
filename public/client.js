@@ -24,7 +24,7 @@ socket.on('joined', ({ id }) => {
 
 socket.on('state', (s) => {
   state = s;
-  render();
+  if (myId) render();
 });
 
 socket.on('buzzersOpen', () => {
