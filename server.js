@@ -93,7 +93,9 @@ Rules:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text = response.content[0].text.trim();
+  let text = response.content[0].text.trim();
+  // Strip markdown code fences if present
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const json = JSON.parse(text);
   return json.clues;
 }
