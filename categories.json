@@ -1,0 +1,18 @@
+{
+  "single": [
+    "World History",
+    "Science & Nature",
+    "Pop Culture",
+    "Geography",
+    "Sports",
+    "Literature"
+  ],
+  "double": [
+    "American History",
+    "Movies & TV",
+    "Music",
+    "Food & Drink",
+    "Technology",
+    "Famous People"
+  ]
+}

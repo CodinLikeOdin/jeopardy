@@ -55,10 +55,24 @@ socket.on('error', ({ message }) => {
 });
 
 // ── Render ───────────────────────────────────────────────────
+let categoriesPreloaded = false;
+
 function render() {
   if (!state) return;
 
   showScreen(state.phase);
+
+  if (state.phase === 'setup' && isHost && !categoriesPreloaded) {
+    categoriesPreloaded = true;
+    fetch('/api/categories')
+      .then(r => r.json())
+      .then(data => {
+        const singleInputs = document.querySelectorAll('.single-cat');
+        const doubleInputs = document.querySelectorAll('.double-cat');
+        data.single.forEach((cat, i) => { if (singleInputs[i]) singleInputs[i].value = cat; });
+        data.double.forEach((cat, i) => { if (doubleInputs[i]) doubleInputs[i].value = cat; });
+      });
+  }
 
   if (state.phase === 'lobby' || state.phase === 'setup' || state.phase === 'generating') {
     renderLobby();

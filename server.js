@@ -12,6 +12,10 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+app.get('/api/categories', (req, res) => {
+  res.sendFile(path.join(__dirname, 'categories.json'));
+});
+
 const client = new Anthropic();
 
 // Game state
