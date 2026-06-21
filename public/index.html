@@ -27,19 +27,29 @@
     <!-- Category Setup (host only) -->
     <div id="setup" class="screen hidden">
       <div class="logo">JEOPARDY!</div>
-      <div class="card">
-        <h2>Choose 6 Categories</h2>
-        <p class="subtitle">These will be used for both rounds</p>
-        <div id="categoryInputs">
-          <input class="cat-input" type="text" placeholder="Category 1" maxlength="30">
-          <input class="cat-input" type="text" placeholder="Category 2" maxlength="30">
-          <input class="cat-input" type="text" placeholder="Category 3" maxlength="30">
-          <input class="cat-input" type="text" placeholder="Category 4" maxlength="30">
-          <input class="cat-input" type="text" placeholder="Category 5" maxlength="30">
-          <input class="cat-input" type="text" placeholder="Category 6" maxlength="30">
+      <div class="setup-columns">
+        <div class="card">
+          <h2>Single Jeopardy</h2>
+          <p class="subtitle">$100 – $500</p>
+          <input class="cat-input single-cat" type="text" placeholder="Category 1" maxlength="30">
+          <input class="cat-input single-cat" type="text" placeholder="Category 2" maxlength="30">
+          <input class="cat-input single-cat" type="text" placeholder="Category 3" maxlength="30">
+          <input class="cat-input single-cat" type="text" placeholder="Category 4" maxlength="30">
+          <input class="cat-input single-cat" type="text" placeholder="Category 5" maxlength="30">
+          <input class="cat-input single-cat" type="text" placeholder="Category 6" maxlength="30">
         </div>
-        <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
+        <div class="card">
+          <h2>Double Jeopardy</h2>
+          <p class="subtitle">$200 – $1000</p>
+          <input class="cat-input double-cat" type="text" placeholder="Category 1" maxlength="30">
+          <input class="cat-input double-cat" type="text" placeholder="Category 2" maxlength="30">
+          <input class="cat-input double-cat" type="text" placeholder="Category 3" maxlength="30">
+          <input class="cat-input double-cat" type="text" placeholder="Category 4" maxlength="30">
+          <input class="cat-input double-cat" type="text" placeholder="Category 5" maxlength="30">
+          <input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30">
+        </div>
       </div>
+      <button class="btn btn-primary" style="margin-top:20px;max-width:300px" onclick="submitCategories()">Generate Questions</button>
     </div>
 
     <!-- Generating -->

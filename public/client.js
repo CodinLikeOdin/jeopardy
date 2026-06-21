@@ -130,8 +130,9 @@ function renderGame() {
   const hc = document.getElementById('hostControls');
   if (isHost) hc.classList.remove('hidden'); else hc.classList.add('hidden');
 
-  // Board grid
-  const cats = state.categories || [];
+  // Board grid — use the category keys from the current round's board
+  const boardData = round === 'single' ? state.board.single : state.board.double;
+  const cats = boardData ? Object.keys(boardData) : (state.categories || []);
   const numCols = cats.length;
   const boardEl = document.getElementById('board');
   boardEl.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
@@ -285,10 +286,11 @@ function renderGameOver() {
 
 // ── Host Actions ──────────────────────────────────────────────
 function submitCategories() {
-  const inputs = document.querySelectorAll('.cat-input');
-  const categories = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
-  if (categories.length < 2) return alert('Enter at least 2 categories');
-  socket.emit('setCategories', { categories });
+  const single = Array.from(document.querySelectorAll('.single-cat')).map(i => i.value.trim()).filter(Boolean);
+  const double = Array.from(document.querySelectorAll('.double-cat')).map(i => i.value.trim()).filter(Boolean);
+  if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category');
+  if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category');
+  socket.emit('setCategories', { singleCategories: single, doubleCategories: double });
 }
 
 function selectSquare(round, category, valueIndex) {

@@ -133,21 +133,21 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('setCategories', async ({ categories }) => {
+  socket.on('setCategories', async ({ singleCategories, doubleCategories }) => {
     if (socket.id !== gameState.hostId) return;
     gameState.phase = 'generating';
-    gameState.categories = categories;
+    gameState.categories = singleCategories; // kept for legacy reference
     broadcastState();
 
     try {
       const singleBoard = {};
-      const doubleBoard = {};
+      for (const cat of singleCategories) {
+        singleBoard[cat] = await generateQuestions(cat);
+      }
 
-      for (const cat of categories) {
-        const clues1 = await generateQuestions(cat);
-        const clues2 = await generateQuestions(cat + ' (advanced)');
-        singleBoard[cat] = clues1;
-        doubleBoard[cat] = clues2;
+      const doubleBoard = {};
+      for (const cat of doubleCategories) {
+        doubleBoard[cat] = await generateQuestions(cat);
       }
 
       gameState.board.single = singleBoard;

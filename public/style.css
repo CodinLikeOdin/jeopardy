@@ -338,6 +338,17 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 .winner-crown { font-size: 1.5rem; margin-left: 8px; }
 
+/* Setup columns */
+.setup-columns {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+  max-width: 860px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.setup-columns .card { flex: 1; min-width: 280px; }
+
 /* Responsive */
 #game {
   display: flex;
