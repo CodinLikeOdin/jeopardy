@@ -64,10 +64,12 @@ function sanitizeState() {
 }
 
 async function generateQuestions(category) {
-  const prompt = `You are writing questions for a Jeopardy! game about the category: "${category}".
+  const generatePrompt = `You are writing questions for a Jeopardy! game about the category: "${category}".
 
 Generate exactly 5 Jeopardy!-style clues for this category, ordered from easiest to hardest.
 In Jeopardy!, the HOST reads a clue (a statement or description) and contestants respond with a QUESTION (e.g., "What is...?").
+
+CRITICAL: Only include facts you are certain are true. If you are not 100% confident in a specific detail (a date, a school, a statistic, a record), leave that detail out and use a fact you ARE certain about instead.
 
 Return ONLY valid JSON in this exact format, no extra text:
 {
@@ -85,19 +87,50 @@ Rules:
 - Each answer should be phrased as "What is X?" or "Who is X?"
 - Order from simplest (index 0) to most difficult (index 4)
 - Keep clues concise and clear
-- Make sure answers are unambiguous`;
+- Make sure answers are unambiguous
+- Avoid specific statistics, records, or obscure details that you might misremember`;
 
-  const response = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+  const generateResponse = await client.messages.create({
+    model: 'claude-sonnet-4-6',
     max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [{ role: 'user', content: generatePrompt }],
   });
 
-  let text = response.content[0].text.trim();
-  // Strip markdown code fences if present
+  let text = generateResponse.content[0].text.trim();
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const json = JSON.parse(text);
-  return json.clues;
+  const generated = JSON.parse(text);
+
+  // Verification pass — check each clue for factual accuracy
+  const verifyPrompt = `You are a fact-checker for a Jeopardy! game. Review each clue and answer pair below and check every specific fact stated in the clue.
+
+Clues to verify:
+${JSON.stringify(generated.clues, null, 2)}
+
+For each clue, decide:
+- KEEP: if all facts in the clue are accurate
+- REPLACE: if any fact is wrong or uncertain — replace with a corrected clue about the same subject using only facts you are certain about
+
+Return ONLY valid JSON with exactly 5 clues in this format, no extra text:
+{
+  "clues": [
+    { "clue": "...", "answer": "..." },
+    { "clue": "...", "answer": "..." },
+    { "clue": "...", "answer": "..." },
+    { "clue": "...", "answer": "..." },
+    { "clue": "...", "answer": "..." }
+  ]
+}`;
+
+  const verifyResponse = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: verifyPrompt }],
+  });
+
+  let verifyText = verifyResponse.content[0].text.trim();
+  verifyText = verifyText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const verified = JSON.parse(verifyText);
+  return verified.clues;
 }
 
 function pickDailyDoubles(board) {
