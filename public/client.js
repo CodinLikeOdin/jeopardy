@@ -56,6 +56,37 @@ socket.on('error', ({ message }) => {
 
 // ── Render ───────────────────────────────────────────────────
 let categoriesPreloaded = false;
+let categoryPool = [];
+
+function getUsedCategories() {
+  return Array.from(document.querySelectorAll('.cat-input'))
+    .map(i => i.value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function pickRandom(exclude = []) {
+  const excluded = exclude.map(s => s.toLowerCase());
+  const available = categoryPool.filter(c => !excluded.includes(c.toLowerCase()));
+  if (!available.length) return null;
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+function rerollOne(btn) {
+  const input = btn.previousElementSibling;
+  const used = getUsedCategories().filter(c => c !== input.value.trim().toLowerCase());
+  const pick = pickRandom(used);
+  if (pick) input.value = pick;
+}
+
+function rerollAll() {
+  const singleInputs = Array.from(document.querySelectorAll('.single-cat'));
+  const doubleInputs = Array.from(document.querySelectorAll('.double-cat'));
+  const used = [];
+  [...singleInputs, ...doubleInputs].forEach(input => {
+    const pick = pickRandom(used);
+    if (pick) { input.value = pick; used.push(pick.toLowerCase()); }
+  });
+}
 
 function render() {
   if (!state) return;
@@ -67,6 +98,7 @@ function render() {
     fetch('/api/categories')
       .then(r => r.json())
       .then(data => {
+        categoryPool = data.pool || [];
         const singleInputs = document.querySelectorAll('.single-cat');
         const doubleInputs = document.querySelectorAll('.double-cat');
         data.single.forEach((cat, i) => { if (singleInputs[i]) singleInputs[i].value = cat; });

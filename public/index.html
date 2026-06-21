@@ -31,25 +31,28 @@
         <div class="card">
           <h2>Single Jeopardy</h2>
           <p class="subtitle">$100 – $500</p>
-          <input class="cat-input single-cat" type="text" placeholder="Category 1" maxlength="30">
-          <input class="cat-input single-cat" type="text" placeholder="Category 2" maxlength="30">
-          <input class="cat-input single-cat" type="text" placeholder="Category 3" maxlength="30">
-          <input class="cat-input single-cat" type="text" placeholder="Category 4" maxlength="30">
-          <input class="cat-input single-cat" type="text" placeholder="Category 5" maxlength="30">
-          <input class="cat-input single-cat" type="text" placeholder="Category 6" maxlength="30">
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 1" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 2" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 3" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 4" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 5" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input single-cat" type="text" placeholder="Category 6" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
         </div>
         <div class="card">
           <h2>Double Jeopardy</h2>
           <p class="subtitle">$200 – $1000</p>
-          <input class="cat-input double-cat" type="text" placeholder="Category 1" maxlength="30">
-          <input class="cat-input double-cat" type="text" placeholder="Category 2" maxlength="30">
-          <input class="cat-input double-cat" type="text" placeholder="Category 3" maxlength="30">
-          <input class="cat-input double-cat" type="text" placeholder="Category 4" maxlength="30">
-          <input class="cat-input double-cat" type="text" placeholder="Category 5" maxlength="30">
-          <input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30">
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 1" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 2" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 3" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 4" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 5" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
+          <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
         </div>
       </div>
-      <button class="btn btn-primary" style="margin-top:20px;max-width:300px" onclick="submitCategories()">Generate Questions</button>
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>
+        <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
+      </div>
     </div>
 
     <!-- Generating -->

@@ -338,6 +338,32 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 .winner-crown { font-size: 1.5rem; margin-left: 8px; }
 
+/* Category row with reroll button */
+.cat-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.cat-row .cat-input { margin-bottom: 0; flex: 1; }
+
+.btn-reroll {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 2px solid #444;
+  background: #0a0a2e;
+  color: #F5A623;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.btn-reroll:hover { background: #1a1a4e; border-color: #F5A623; }
+
 /* Setup columns */
 .setup-columns {
   display: flex;
