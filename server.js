@@ -63,6 +63,13 @@ function sanitizeState() {
   return s;
 }
 
+function extractJSON(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('No JSON object found in response');
+  return text.slice(start, end + 1);
+}
+
 async function generateQuestions(category) {
   const generatePrompt = `You are writing questions for a Jeopardy! game about the category: "${category}".
 
@@ -97,8 +104,7 @@ Rules:
   });
 
   let text = generateResponse.content[0].text.trim();
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const generated = JSON.parse(text);
+  const generated = JSON.parse(extractJSON(text));
 
   // Verification pass — check each clue for factual accuracy
   const verifyPrompt = `You are a fact-checker for a Jeopardy! game. Review each clue and answer pair below and check every specific fact stated in the clue.
@@ -128,8 +134,7 @@ Return ONLY valid JSON with exactly 5 clues in this format, no extra text:
   });
 
   let verifyText = verifyResponse.content[0].text.trim();
-  verifyText = verifyText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const verified = JSON.parse(verifyText);
+  const verified = JSON.parse(extractJSON(verifyText));
   return verified.clues;
 }
 
