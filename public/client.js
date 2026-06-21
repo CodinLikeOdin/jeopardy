@@ -3,6 +3,19 @@ let myId = null;
 let isHost = false;
 let state = null;
 let hasBuzzed = false;
+let lastSpokenQuestion = null;
+
+function speakClue(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 0.9;
+  utter.pitch = 1;
+  if (isHost) {
+    utter.onend = () => socket.emit('openBuzzers');
+  }
+  window.speechSynthesis.speak(utter);
+}
 
 // ── Connection ──────────────────────────────────────────────
 function joinAsPlayer() {
@@ -165,6 +178,13 @@ function renderQuestionModal() {
   document.getElementById('modalCategory').textContent = q.category;
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
+
+  // Auto-read clue aloud on host when question first appears
+  const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
+  if (isHost && questionKey !== lastSpokenQuestion) {
+    lastSpokenQuestion = questionKey;
+    speakClue(q.clue);
+  }
 
   // Answer (host can always see it)
   const answerEl = document.getElementById('modalAnswer');
