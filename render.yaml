@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: jeopardy
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
