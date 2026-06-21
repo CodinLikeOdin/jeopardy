@@ -1,3 +1,97 @@
+// ── Title Screen ─────────────────────────────────────────────
+(function initTitleScreen() {
+  const screen = document.getElementById('titleScreen');
+  const canvas = document.getElementById('particleCanvas');
+  const ctx = canvas.getContext('2d');
+  const countdownEl = document.getElementById('titleCountdown');
+  const DURATION = 10000;
+  const start = Date.now();
+
+  function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Particles
+  const COLORS = ['#F5A623','#FFE066','#fff','#FFD700','#FFA500','#fffbe6'];
+  const particles = Array.from({ length: 120 }, () => spawnParticle(true));
+
+  function spawnParticle(initial) {
+    return {
+      x: Math.random() * window.innerWidth,
+      y: initial ? Math.random() * window.innerHeight : window.innerHeight + 10,
+      r: Math.random() * 3.5 + 1,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      vx: (Math.random() - 0.5) * 1.2,
+      vy: -(Math.random() * 2.5 + 0.8),
+      alpha: Math.random() * 0.6 + 0.4,
+      spin: (Math.random() - 0.5) * 0.15,
+      shape: Math.random() < 0.5 ? 'star' : 'circle',
+      twinkle: Math.random() * Math.PI * 2,
+    };
+  }
+
+  function drawStar(ctx, x, y, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const outer = (i * Math.PI * 4) / 5 - Math.PI / 2;
+      const inner = outer + Math.PI / 5;
+      if (i === 0) ctx.moveTo(x + r * Math.cos(outer), y + r * Math.sin(outer));
+      else ctx.lineTo(x + r * Math.cos(outer), y + r * Math.sin(outer));
+      ctx.lineTo(x + (r * 0.4) * Math.cos(inner), y + (r * 0.4) * Math.sin(inner));
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  let animId;
+  function animate() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const elapsed = Date.now() - start;
+    const remaining = Math.max(0, Math.ceil((DURATION - elapsed) / 1000));
+    countdownEl.textContent = remaining > 0 ? `${remaining}s` : '';
+
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.twinkle += 0.06;
+      const alpha = p.alpha * (0.7 + 0.3 * Math.sin(p.twinkle));
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      if (p.shape === 'star') {
+        drawStar(ctx, p.x, p.y, p.r * 2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      if (p.y < -20) Object.assign(p, spawnParticle(false));
+    }
+
+    if (elapsed < DURATION) {
+      animId = requestAnimationFrame(animate);
+    }
+  }
+  animate();
+
+  // Dismiss after DURATION
+  setTimeout(() => {
+    cancelAnimationFrame(animId);
+    screen.classList.add('fade-out');
+    setTimeout(() => screen.remove(), 1200);
+  }, DURATION);
+})();
+
+// ── Game ──────────────────────────────────────────────────────
 const socket = io();
 let myId = null;
 let isHost = false;
