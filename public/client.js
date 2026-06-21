@@ -6,13 +6,23 @@ let hasBuzzed = false;
 let lastSpokenQuestion = null;
 
 function speakClue(text) {
-  if (!window.speechSynthesis) return;
+  if (!window.speechSynthesis) {
+    if (isHost) socket.emit('openBuzzers');
+    return;
+  }
   window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate = 0.9;
   utter.pitch = 1;
   if (isHost) {
-    utter.onend = () => socket.emit('openBuzzers');
+    let opened = false;
+    function openOnce() {
+      if (!opened) { opened = true; socket.emit('openBuzzers'); }
+    }
+    utter.onend = openOnce;
+    // Fallback: some browsers never fire onend on repeated utterances
+    const fallbackMs = Math.ceil(text.length / 12) * 1000 + 2500;
+    setTimeout(openOnce, fallbackMs);
   }
   window.speechSynthesis.speak(utter);
 }
