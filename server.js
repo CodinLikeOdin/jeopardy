@@ -208,68 +208,48 @@ function extractJSON(text) {
   throw new Error('No balanced JSON object found in response');
 }
 
-async function generateQuestions(category) {
-  const generatePrompt = `You are writing questions for a Jeopardy! game about the category: "${category}".
-
-Generate exactly 5 Jeopardy!-style clues for this category, ordered from easiest to hardest.
-In Jeopardy!, the HOST reads a clue (a statement or description) and contestants respond with a QUESTION (e.g., "What is...?").
-
-CRITICAL: Only include facts you are certain are true. If you are not 100% confident in a specific detail (a date, a school, a statistic, a record), leave that detail out and use a fact you ARE certain about instead.
-
-Return ONLY valid JSON in this exact format, no extra text:
-{
-  "clues": [
-    { "clue": "...", "answer": "What is ...?" },
-    { "clue": "...", "answer": "What is ...?" },
-    { "clue": "...", "answer": "What is ...?" },
-    { "clue": "...", "answer": "What is ...?" },
-    { "clue": "...", "answer": "What is ...?" }
-  ]
+// Run async tasks with a concurrency cap (avoids hammering the API / rate limits).
+async function runWithConcurrency(items, limit, fn) {
+  const queue = items.slice();
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) await fn(queue.shift());
+  });
+  await Promise.all(workers);
 }
 
+// Generate one category's 5 clues in a SINGLE self-verifying call (was two calls).
+// Retries a couple of times on transient errors / malformed JSON.
+async function generateQuestions(category) {
+  const prompt = `You are writing one category for a game of Jeopardy!: "${category}".
+
+Write exactly 5 clues, ordered easiest (index 0) to hardest (index 4). In Jeopardy! the host READS a clue (a statement) and players respond with a QUESTION ("What is...?").
+
+ACCURACY IS CRITICAL: state only facts you are highly confident are true. Mentally fact-check each clue and fix anything uncertain before answering. Avoid obscure stats, exact dates, or records you might misremember.
+
+Return ONLY valid JSON, no other text:
+{"clues":[{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"}]}
+
 Rules:
-- Each clue should be a statement/description, NOT a question
-- Each answer should be phrased as "What is X?" or "Who is X?"
-- Order from simplest (index 0) to most difficult (index 4)
-- Keep clues concise and clear
-- Make sure answers are unambiguous
-- Avoid specific statistics, records, or obscure details that you might misremember`;
+- each clue is a statement/description, NOT a question
+- each answer is phrased "What is X?" or "Who is X?"
+- concise and unambiguous`;
 
-  const generateResponse = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: generatePrompt }],
-  });
-
-  const generated = JSON.parse(extractJSON(generateResponse.content[0].text.trim()));
-
-  const verifyPrompt = `You are a fact-checker for a Jeopardy! game. Review each clue and answer pair below and check every specific fact stated in the clue.
-
-Clues to verify:
-${JSON.stringify(generated.clues, null, 2)}
-
-For each clue, decide:
-- KEEP: if all facts in the clue are accurate
-- REPLACE: if any fact is wrong or uncertain — replace with a corrected clue about the same subject using only facts you are certain about
-
-Return ONLY valid JSON with exactly 5 clues in this format, no extra text:
-{
-  "clues": [
-    { "clue": "...", "answer": "..." },
-    { "clue": "...", "answer": "..." },
-    { "clue": "...", "answer": "..." },
-    { "clue": "...", "answer": "..." },
-    { "clue": "...", "answer": "..." }
-  ]
-}`;
-
-  const verifyResponse = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: verifyPrompt }],
-  });
-
-  return JSON.parse(extractJSON(verifyResponse.content[0].text.trim())).clues;
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await client.messages.create(
+        { model: 'claude-sonnet-4-6', max_tokens: 900, messages: [{ role: 'user', content: prompt }] },
+        { timeout: 45000, maxRetries: 1 }
+      );
+      const clues = JSON.parse(extractJSON(resp.content[0].text.trim())).clues;
+      if (Array.isArray(clues) && clues.length >= 5) return clues.slice(0, 5);
+      throw new Error('unexpected clue shape');
+    } catch (err) {
+      lastErr = err;
+      console.error(`generate "${category}" attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
+  throw lastErr;
 }
 
 function pickDailyDoubles(board) {
@@ -332,26 +312,44 @@ io.on('connection', (socket) => {
     if (socket.id !== gameState.hostId) return;
     gameState.phase = 'generating';
     gameState.categories = singleCategories;
+
+    const tasks = [
+      ...singleCategories.map(cat => ({ round: 'single', cat })),
+      ...doubleCategories.map(cat => ({ round: 'double', cat })),
+    ];
+    gameState.genProgress = { done: 0, total: tasks.length };
     broadcastState();
 
-    try {
-      const singleBoard = {};
-      for (const cat of singleCategories) singleBoard[cat] = await generateQuestions(cat);
+    const singleBoard = {}, doubleBoard = {};
+    const failures = [];
 
-      const doubleBoard = {};
-      for (const cat of doubleCategories) doubleBoard[cat] = await generateQuestions(cat);
-
-      gameState.board.single = singleBoard;
-      gameState.board.double = doubleBoard;
-      gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
-      gameState.phase = 'single';
+    // All categories generate concurrently (capped), with live progress.
+    await runWithConcurrency(tasks, 6, async (t) => {
+      try {
+        const clues = await generateQuestions(t.cat);
+        (t.round === 'single' ? singleBoard : doubleBoard)[t.cat] = clues;
+      } catch (err) {
+        failures.push(t.cat);
+      }
+      gameState.genProgress.done++;
       broadcastState();
-    } catch (err) {
-      console.error('Error generating questions:', err);
-      socket.emit('error', { message: 'Failed to generate questions: ' + err.message });
+    });
+
+    if (failures.length) {
+      console.error('Failed categories:', failures.join(', '));
+      socket.emit('error', { message: `Could not generate: ${failures.join(', ')}. Please try again.` });
       gameState.phase = 'setup';
+      gameState.genProgress = null;
       broadcastState();
+      return;
     }
+
+    gameState.board.single = singleBoard;
+    gameState.board.double = doubleBoard;
+    gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
+    gameState.phase = 'single';
+    gameState.genProgress = null;
+    broadcastState();
   });
 
   // Clock sync: client measures round-trip and estimates its offset from server time

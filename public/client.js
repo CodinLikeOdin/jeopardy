@@ -343,6 +343,11 @@ function render() {
   }
   if (state.phase === 'generating') {
     showScreen('generating');
+    const gs = document.getElementById('genStatus');
+    if (gs && state.genProgress) {
+      const { done, total } = state.genProgress;
+      gs.textContent = `Writing clues… ${done} of ${total} categories ready`;
+    }
   }
   if (state.phase === 'single' || state.phase === 'double') {
     renderGame();
