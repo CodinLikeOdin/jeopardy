@@ -130,9 +130,23 @@ function broadcastState() {
 
 function extractJSON(text) {
   const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON object found in response');
-  return text.slice(start, end + 1);
+  if (start === -1) throw new Error('No JSON object found in response');
+  // Walk forward tracking brace depth (ignoring braces inside strings)
+  // to find the end of the first complete, balanced object.
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  throw new Error('No balanced JSON object found in response');
 }
 
 async function generateQuestions(category) {
