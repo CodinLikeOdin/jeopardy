@@ -156,7 +156,9 @@ function resetGame() {
 }
 
 function broadcastState() {
-  io.emit('state', JSON.parse(JSON.stringify(gameState)));
+  // lockUntil (per-player buzz penalty) is transient server state, but the
+  // client needs it to render each player's buzz button authoritatively.
+  io.emit('state', JSON.parse(JSON.stringify({ ...gameState, lockUntil })));
 }
 
 function extractJSON(text) {
@@ -366,24 +368,22 @@ io.on('connection', (socket) => {
     if (!player) return;
     if (gameState.buzzers.find(b => b.id === socket.id)) return; // already locked in
 
-    // Early buzz (before reading finished) → reject + penalize
+    // Early buzz (before reading finished) → penalize. The lockout is held
+    // open (sentinel) until reading finishes, then resolved to +250ms.
     if (!gameState.readingDone) {
       earlyBuzzers[socket.id] = true;
-      socket.emit('buzzResult', { status: 'early' });
+      lockUntil[socket.id] = Number.MAX_SAFE_INTEGER;
+      broadcastState();
       return;
     }
 
-    // Still serving a lockout penalty
-    if (lockUntil[socket.id] && Date.now() < lockUntil[socket.id]) {
-      socket.emit('buzzResult', { status: 'locked', unlockAt: lockUntil[socket.id] });
-      return;
-    }
+    // Still serving a lockout penalty — state already reflects it
+    if (lockUntil[socket.id] && Date.now() < lockUntil[socket.id]) return;
 
     // Valid buzz
     gameState.buzzers.push({ id: socket.id, name: player.name, clientTimestamp });
     gameState.buzzers.sort((a, b) => a.clientTimestamp - b.clientTimestamp);
     clearQuestionTimeout();
-    socket.emit('buzzResult', { status: 'accepted' });
     broadcastState();
   });
 

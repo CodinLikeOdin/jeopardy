@@ -96,7 +96,7 @@ const socket = io();
 let myId = null;
 let isHost = false;
 let state = null;
-let buzzState = 'ready';      // ready | buzzed | early | locked
+let buzzPending = false;      // optimistic: emitted a buzz, awaiting next state
 let activeQuestionKey = null; // detects when a new question starts
 let clueAudio = null;
 
@@ -214,26 +214,10 @@ socket.on('state', (s) => {
   if (myId) render();
 });
 
-// Result of my own buzz attempt
-socket.on('buzzResult', ({ status, unlockAt }) => {
-  if (status === 'accepted') {
-    buzzState = 'buzzed';
-  } else if (status === 'early') {
-    buzzState = 'early';   // locked until 250ms after reading; re-enabled by 'readingDone'
-  } else if (status === 'locked') {
-    buzzState = 'locked';
-    scheduleUnlock(unlockAt);
-  }
-  updateBuzzButton();
-});
+// Reading finished — just re-render the button from the new state
+socket.on('readingDone', () => updateBuzzButton());
 
-// Reading finished — the broadcast state drives the actual unlock timing
-// (see updateBuzzButton self-heal); this just re-renders promptly.
-socket.on('readingDone', () => {
-  updateBuzzButton();
-});
-
-// Nobody buzzed within 3s of reading finishing
+// Nobody buzzed within the time limit
 socket.on('questionTimeout', () => {
   playWrongSound();
 });
@@ -242,47 +226,44 @@ socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
 
-let unlockTimer = null;
-function scheduleUnlock(unlockAt) {
-  if (unlockTimer) clearTimeout(unlockTimer);
-  const delay = Math.max(0, unlockAt - Date.now()) + 20;
-  unlockTimer = setTimeout(() => {
-    if (buzzState === 'locked' || buzzState === 'early') {
-      buzzState = 'ready';
-      updateBuzzButton();
-    }
-  }, delay);
-}
+let buzzRefreshTimer = null;
 
+// The buzz button is rendered ENTIRELY from authoritative server state, so it
+// can never get stuck in a stale local state. The only inputs are: is there a
+// buzzable question, am I already a buzzer, and my server-side lockout (if I
+// buzzed early). A pending optimistic disable is cleared by the next state.
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
-  // Hidden unless there's an active, buzzable question (not a daily double)
-  if (!state || !state.currentQuestion || !state.buzzOpen || state.currentQuestion.isDailyDouble) {
+  if (buzzRefreshTimer) { clearTimeout(buzzRefreshTimer); buzzRefreshTimer = null; }
+
+  const q = state && state.currentQuestion;
+  if (!q || !state.buzzOpen || q.isDailyDouble || q.revealed) {
     btn.classList.add('hidden');
     return;
   }
 
-  // Self-heal the early/locked penalty from broadcast state so the button can
-  // never get permanently stuck if the one-shot 'readingDone' event is missed.
-  if ((buzzState === 'early' || buzzState === 'locked') && state.readingDone && state.readingDoneTime) {
-    const unlockAt = state.readingDoneTime + 250;
-    if (Date.now() >= unlockAt) {
-      buzzState = 'ready';
-    } else {
-      buzzState = 'locked';
-      scheduleUnlock(unlockAt);
-    }
-  }
+  const buzzers = state.buzzers || [];
+  const iAmBuzzer = buzzers.some(b => b.id === myId);
+  const someoneBuzzed = buzzers.length > 0;
+  const myLock = (state.lockUntil && state.lockUntil[myId]) || 0;
+  const now = Date.now();
 
-  const iAmBuzzer = state.buzzers && state.buzzers.find(b => b.id === myId);
+  // Someone already won the buzz (and it isn't me): hide the button
+  if (someoneBuzzed && !iAmBuzzer) { btn.classList.add('hidden'); return; }
   btn.classList.remove('hidden');
-  if (iAmBuzzer || buzzState === 'buzzed') {
+
+  if (iAmBuzzer) {
     btn.disabled = true; btn.textContent = 'BUZZED!';
-  } else if (buzzState === 'early') {
-    btn.disabled = true; btn.textContent = 'TOO EARLY!';
-  } else if (buzzState === 'locked') {
-    btn.disabled = true; btn.textContent = 'WAIT…';
+  } else if (myLock && now < myLock) {
+    btn.disabled = true;
+    btn.textContent = state.readingDone ? 'WAIT…' : 'TOO EARLY!';
+    // Re-check when my finite lockout expires
+    if (myLock < Number.MAX_SAFE_INTEGER) {
+      buzzRefreshTimer = setTimeout(updateBuzzButton, myLock - now + 40);
+    }
+  } else if (buzzPending) {
+    btn.disabled = true; btn.textContent = 'BUZZING…';
   } else {
     btn.disabled = false; btn.textContent = 'BUZZ IN';
   }
@@ -459,11 +440,12 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // New question? reset my buzz state and (host) start reading aloud
+  // New question? (host) start reading aloud. Buzz state is fully derived from
+  // server state, so nothing local needs resetting here.
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
   if (questionKey !== activeQuestionKey) {
     activeQuestionKey = questionKey;
-    buzzState = 'ready';
+    buzzPending = false;
     if (isHost) speakClue(q.clue);
   }
 
@@ -622,14 +604,14 @@ function submitWager(max) {
 
 // ── Player Actions ────────────────────────────────────────────
 function buzz() {
-  if (buzzState !== 'ready') return;
   if (!state || !state.currentQuestion || !state.buzzOpen) return;
-  const btn = document.getElementById('buzzBtn');
-  if (btn) btn.disabled = true; // prevent double-tap; server result sets final state
+  if (buzzPending) return;
+  buzzPending = true;
+  updateBuzzButton(); // optimistic "BUZZING…"
   socket.emit('buzz', { clientTimestamp: Date.now() });
-  // Watchdog: if the server never replies (e.g. buzz arrived after the window
-  // closed), restore the button from current state instead of leaving it grey.
-  setTimeout(() => { if (buzzState === 'ready') updateBuzzButton(); }, 1200);
+  // Clear the optimistic flag shortly; by then the authoritative state has
+  // arrived and updateBuzzButton reflects the true result.
+  setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 800);
 }
 
 // ── Utils ─────────────────────────────────────────────────────
