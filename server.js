@@ -78,30 +78,61 @@ let earlyBuzzers = {}; // playerId -> true (buzzed before reading finished)
 let lockUntil = {};    // playerId -> timestamp they may buzz again
 
 let questionTimeoutHandle = null;
+let revealTimeoutHandle = null;
+let readingSafetyHandle = null;
 
 function clearQuestionTimeout() {
-  if (questionTimeoutHandle) {
-    clearTimeout(questionTimeoutHandle);
-    questionTimeoutHandle = null;
-  }
+  if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
+  if (revealTimeoutHandle) { clearTimeout(revealTimeoutHandle); revealTimeoutHandle = null; }
+  if (readingSafetyHandle) { clearTimeout(readingSafetyHandle); readingSafetyHandle = null; }
 }
 
-// 3 seconds after reading finishes with nobody buzzed in → nobody got it,
-// board control is retained, play the "no answer" buzzers.
+// 8 seconds after reading finishes with nobody buzzed in → nobody got it.
+// Reveal the answer to everyone for 5 seconds; board control is retained.
 function startTimeoutIfEmpty() {
-  clearQuestionTimeout();
+  if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
   if (gameState.buzzers.length > 0) return;
+  // Daily doubles are not timed — the controlling contestant has unlimited time.
+  if (gameState.currentQuestion && gameState.currentQuestion.isDailyDouble) return;
   questionTimeoutHandle = setTimeout(() => {
     questionTimeoutHandle = null;
     if (gameState.currentQuestion && gameState.buzzers.length === 0) {
-      gameState.currentQuestion = null;
-      gameState.buzzOpen = false;
-      gameState.readingDone = false;
-      gameState.readingDoneTime = null;
       io.emit('questionTimeout');
-      broadcastState();
+      revealAnswerThenClear();
     }
-  }, 3000);
+  }, 8000);
+}
+
+// Reading has finished (either host audio reported it, or the safety net fired).
+function markReadingDone() {
+  if (readingSafetyHandle) { clearTimeout(readingSafetyHandle); readingSafetyHandle = null; }
+  if (!gameState.currentQuestion || gameState.readingDone) return;
+
+  gameState.readingDone = true;
+  gameState.readingDoneTime = Date.now();
+
+  // Anyone who buzzed early is locked out until 250ms after reading completes
+  const unlockAt = gameState.readingDoneTime + 250;
+  Object.keys(earlyBuzzers).forEach(id => { lockUntil[id] = unlockAt; });
+  io.emit('readingDone', { unlockAt, lockedIds: Object.keys(earlyBuzzers) });
+
+  startTimeoutIfEmpty();
+  broadcastState();
+}
+
+// Show the answer to everyone for 5 seconds, then clear the board.
+function revealAnswerThenClear() {
+  if (!gameState.currentQuestion) return;
+  gameState.buzzOpen = false;
+  gameState.currentQuestion.revealed = true;
+  broadcastState();
+  revealTimeoutHandle = setTimeout(() => {
+    revealTimeoutHandle = null;
+    gameState.currentQuestion = null;
+    gameState.readingDone = false;
+    gameState.readingDoneTime = null;
+    broadcastState();
+  }, 5000);
 }
 
 function resetGame() {
@@ -234,10 +265,25 @@ io.on('connection', (socket) => {
       gameState.hostId = socket.id;
       if (gameState.phase === 'lobby') gameState.phase = 'setup';
     }
-    const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
-    const usedColors = Object.values(gameState.players).map(p => p.color);
-    const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
-    gameState.players[socket.id] = { name, score: 0, color, isHost: !!isHost };
+
+    // Reconnect handling: if a player with this name already exists (e.g. their
+    // phone dropped and rejoined with a new socket id), reclaim their entry so
+    // their accumulated score is preserved instead of resetting to zero.
+    const existingId = Object.keys(gameState.players).find(id =>
+      id !== socket.id &&
+      !!gameState.players[id].isHost === !!isHost &&
+      gameState.players[id].name.toLowerCase() === name.trim().toLowerCase()
+    );
+    if (existingId) {
+      gameState.players[socket.id] = { ...gameState.players[existingId], disconnected: false };
+      delete gameState.players[existingId];
+      if (gameState.boardControl === existingId) gameState.boardControl = socket.id;
+    } else {
+      const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
+      const usedColors = Object.values(gameState.players).map(p => p.color);
+      const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
+      gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost };
+    }
     socket.emit('joined', { id: socket.id });
     broadcastState();
   });
@@ -289,29 +335,29 @@ io.on('connection', (socket) => {
       clue: clue.clue, answer: clue.answer, isDailyDouble,
     };
     gameState.buzzers = [];
-    gameState.buzzOpen = true;   // open immediately (buzzing during reading is penalized)
+    // Daily doubles have no buzzing race — only the controlling player answers.
+    gameState.buzzOpen = !isDailyDouble;
     gameState.readingDone = false;
     gameState.readingDoneTime = null;
     gameState.dailyDoubleWager = null;
     gameState.usedSquares[round][key] = true;
+
+    // Safety net: if the host's audio never reports "finished" (TTS glitch,
+    // backgrounded tab), force reading-done after a generous delay so buzzers
+    // never get stuck in the early-penalty state.
+    const estMs = Math.ceil(clue.clue.length / 9) * 1000 + 8000;
+    readingSafetyHandle = setTimeout(() => {
+      readingSafetyHandle = null;
+      markReadingDone();
+    }, estMs);
+
     broadcastState();
   });
 
   // Host signals that audio finished reading
   socket.on('readingFinished', () => {
     if (socket.id !== gameState.hostId) return;
-    if (!gameState.currentQuestion || gameState.readingDone) return;
-
-    gameState.readingDone = true;
-    gameState.readingDoneTime = Date.now();
-
-    // Anyone who buzzed early is locked out until 250ms after reading completes
-    const unlockAt = gameState.readingDoneTime + 250;
-    Object.keys(earlyBuzzers).forEach(id => { lockUntil[id] = unlockAt; });
-    io.emit('readingDone', { unlockAt, lockedIds: Object.keys(earlyBuzzers) });
-
-    startTimeoutIfEmpty();
-    broadcastState();
+    markReadingDone();
   });
 
   socket.on('buzz', ({ clientTimestamp }) => {

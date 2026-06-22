@@ -256,6 +256,8 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   color: #000;
 }
 
+.score-chip.dim { opacity: 0.45; }
+
 .control-chip {
   padding: 4px 12px;
   border-radius: 12px;

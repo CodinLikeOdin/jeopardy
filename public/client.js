@@ -126,6 +126,12 @@ async function speakClue(text) {
     clueAudio = new Audio(url);
     clueAudio.onended = () => { URL.revokeObjectURL(url); done(); };
     clueAudio.onerror = () => { URL.revokeObjectURL(url); done(); };
+    // Fallback: if 'ended' never fires, finish based on audio duration
+    clueAudio.onloadedmetadata = () => {
+      const ms = (clueAudio.duration || (text.length / 12)) * 1000 + 1500;
+      setTimeout(done, ms);
+    };
+    setTimeout(done, Math.ceil(text.length / 9) * 1000 + 6000); // hard cap
     await clueAudio.play();
     return;
   } catch (err) {
@@ -386,9 +392,8 @@ function renderGame() {
   document.getElementById('scoreboard').innerHTML =
     (controlPlayer ? `<div class="control-chip" style="border-color:${controlPlayer.color}">🎯 ${escHtml(controlPlayer.name)}</div>` : '') +
     players
-      .filter(p => !p.disconnected)
       .sort((a,b) => b.score - a.score)
-      .map(p => `<div class="score-chip" style="background:${p.color}">${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
+      .map(p => `<div class="score-chip${p.disconnected ? ' dim' : ''}" style="background:${p.color}">${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
       .join('');
 
   // Host controls
@@ -454,20 +459,28 @@ function renderQuestionModal() {
   }
 
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
+  const revealed = !!q.revealed;
+  const ddReadyToJudge = q.isDailyDouble && state.dailyDoubleWager !== null && state.readingDone;
 
-  // Reading status indicator (hidden once someone has buzzed)
+  // Reading status indicator (hidden once someone buzzed or the answer is shown)
   const readingStatus = document.getElementById('readingStatus');
-  if (!hasTopBuzzer) {
+  if (!hasTopBuzzer && !revealed && !q.isDailyDouble) {
     readingStatus.classList.remove('hidden');
     readingStatus.textContent = state.readingDone ? '🔔 BUZZ NOW!' : '🔊 Reading…';
   } else {
     readingStatus.classList.add('hidden');
   }
 
-  // Answer is hidden from EVERYONE (host included) until it's time to judge —
-  // i.e. once a buzzer is locked in and the host must rule correct/incorrect.
+  // Answer visibility:
+  //  • revealed on timeout → shown to EVERYONE for 5s
+  //  • otherwise the host sees it only when it's time to judge (a buzzer is
+  //    locked in, or a daily double whose wager is set and reading is done)
   const answerEl = document.getElementById('modalAnswer');
-  if (isHost && hasTopBuzzer) {
+  const hostJudging = isHost && (hasTopBuzzer || ddReadyToJudge);
+  if (revealed) {
+    answerEl.textContent = 'Answer: ' + q.answer;
+    answerEl.classList.remove('hidden');
+  } else if (hostJudging) {
     answerEl.textContent = q.answer;
     answerEl.classList.remove('hidden');
   } else {
@@ -480,11 +493,11 @@ function renderQuestionModal() {
   if (q.isDailyDouble) {
     ddSection.classList.remove('hidden');
     if (isHost && state.dailyDoubleWager === null) {
-      const buzzerId = state.buzzers.length > 0 ? state.buzzers[0].id : null;
-      const buzzerPlayer = buzzerId ? state.players[buzzerId] : null;
-      const maxWager = buzzerPlayer ? Math.max(buzzerPlayer.score, q.dollarValue) : q.dollarValue;
+      const ctrl = state.boardControl ? state.players[state.boardControl] : null;
+      const ctrlName = ctrl ? escHtml(ctrl.name) : 'the controlling player';
+      const maxWager = ctrl ? Math.max(ctrl.score, q.dollarValue) : q.dollarValue;
       wagerSection.innerHTML = `
-        <span>Wager (max $${maxWager}):</span>
+        <span>${ctrlName}'s wager (max $${maxWager}):</span>
         <input type="number" id="wagerInput" min="5" max="${maxWager}" value="${q.dollarValue}" style="padding:8px;border-radius:6px;border:none">
         <button class="btn btn-primary btn-sm" onclick="submitWager(${maxWager})">Set Wager</button>
       `;
@@ -515,29 +528,37 @@ function renderQuestionModal() {
     buzzersEl.innerHTML = '';
   }
 
-  // Judging controls (host only, once a buzzer is locked in)
+  // Judging controls (host only). Normal questions judge the top buzzer;
+  // daily doubles judge the controlling player once the wager is set.
   const hqc = document.getElementById('hostQuestionControls');
   const awardContainer = document.getElementById('playerAwardButtons');
   const buzzBtn = document.getElementById('buzzBtn');
   const topBuzzer = state.buzzers && state.buzzers[0];
 
-  if (isHost && topBuzzer) {
+  let judgeId = null, judgeValue = q.dollarValue;
+  if (topBuzzer) {
+    judgeId = topBuzzer.id;
+    judgeValue = (q.isDailyDouble && state.dailyDoubleWager !== null) ? state.dailyDoubleWager : q.dollarValue;
+  } else if (ddReadyToJudge) {
+    judgeId = state.boardControl;
+    judgeValue = state.dailyDoubleWager;
+  }
+
+  if (isHost && judgeId && !revealed) {
     hqc.classList.remove('hidden');
-    const player = state.players[topBuzzer.id];
-    const value = (q.isDailyDouble && state.dailyDoubleWager !== null)
-      ? state.dailyDoubleWager : q.dollarValue;
+    const player = state.players[judgeId];
     awardContainer.innerHTML = `
-      <strong style="width:100%;text-align:center">Judging: ${escHtml(player ? player.name : topBuzzer.name)}</strong>
-      <button class="award-btn award-correct" onclick="awardPoints('${topBuzzer.id}', true)">✓ Correct (+$${value})</button>
-      <button class="award-btn award-wrong" onclick="awardPoints('${topBuzzer.id}', false)">✗ Wrong (-$${value})</button>
+      <strong style="width:100%;text-align:center">Judging: ${escHtml(player ? player.name : '?')}</strong>
+      <button class="award-btn award-correct" onclick="awardPoints('${judgeId}', true)">✓ Correct (+$${judgeValue})</button>
+      <button class="award-btn award-wrong" onclick="awardPoints('${judgeId}', false)">✗ Wrong (-$${judgeValue})</button>
     `;
   } else {
     hqc.classList.add('hidden');
     awardContainer.innerHTML = '';
   }
 
-  // Everyone (host included) can buzz until someone is locked in
-  if (topBuzzer) {
+  // Buzz button: only for normal questions, until someone is locked in
+  if (q.isDailyDouble || topBuzzer || revealed) {
     buzzBtn.classList.add('hidden');
   } else {
     updateBuzzButton();
