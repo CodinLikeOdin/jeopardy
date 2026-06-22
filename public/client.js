@@ -227,12 +227,9 @@ socket.on('buzzResult', ({ status, unlockAt }) => {
   updateBuzzButton();
 });
 
-// Reading finished — unlock penalized players 250ms later
-socket.on('readingDone', ({ unlockAt, lockedIds }) => {
-  if (buzzState === 'early' && lockedIds.includes(myId)) {
-    buzzState = 'locked';
-    scheduleUnlock(unlockAt);
-  }
+// Reading finished — the broadcast state drives the actual unlock timing
+// (see updateBuzzButton self-heal); this just re-renders promptly.
+socket.on('readingDone', () => {
   updateBuzzButton();
 });
 
@@ -248,9 +245,9 @@ socket.on('error', ({ message }) => {
 let unlockTimer = null;
 function scheduleUnlock(unlockAt) {
   if (unlockTimer) clearTimeout(unlockTimer);
-  const delay = Math.max(0, unlockAt - Date.now());
+  const delay = Math.max(0, unlockAt - Date.now()) + 20;
   unlockTimer = setTimeout(() => {
-    if (buzzState === 'locked') {
+    if (buzzState === 'locked' || buzzState === 'early') {
       buzzState = 'ready';
       updateBuzzButton();
     }
@@ -260,12 +257,24 @@ function scheduleUnlock(unlockAt) {
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
-  // Hidden unless there's an active question with buzzing open
-  if (!state || !state.currentQuestion || !state.buzzOpen) {
+  // Hidden unless there's an active, buzzable question (not a daily double)
+  if (!state || !state.currentQuestion || !state.buzzOpen || state.currentQuestion.isDailyDouble) {
     btn.classList.add('hidden');
     return;
   }
-  // If I'm already locked in as a buzzer, show buzzed state
+
+  // Self-heal the early/locked penalty from broadcast state so the button can
+  // never get permanently stuck if the one-shot 'readingDone' event is missed.
+  if ((buzzState === 'early' || buzzState === 'locked') && state.readingDone && state.readingDoneTime) {
+    const unlockAt = state.readingDoneTime + 250;
+    if (Date.now() >= unlockAt) {
+      buzzState = 'ready';
+    } else {
+      buzzState = 'locked';
+      scheduleUnlock(unlockAt);
+    }
+  }
+
   const iAmBuzzer = state.buzzers && state.buzzers.find(b => b.id === myId);
   btn.classList.remove('hidden');
   if (iAmBuzzer || buzzState === 'buzzed') {
@@ -618,6 +627,9 @@ function buzz() {
   const btn = document.getElementById('buzzBtn');
   if (btn) btn.disabled = true; // prevent double-tap; server result sets final state
   socket.emit('buzz', { clientTimestamp: Date.now() });
+  // Watchdog: if the server never replies (e.g. buzz arrived after the window
+  // closed), restore the button from current state instead of leaving it grey.
+  setTimeout(() => { if (buzzState === 'ready') updateBuzzButton(); }, 1200);
 }
 
 // ── Utils ─────────────────────────────────────────────────────
