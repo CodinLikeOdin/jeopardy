@@ -97,59 +97,62 @@ let myId = null;
 let isHost = false;
 let state = null;
 let buzzPending = false;      // optimistic: emitted a buzz, awaiting next state
-let activeQuestionKey = null; // detects when a new question starts
-let clueAudio = null;
+let activeAudioKey = null;    // which question's audio we've already scheduled
+let shownQuestionKey = null;  // detects when a new question modal appears
 
-// Read the clue aloud (host only). Tries ElevenLabs first (reliable 'ended'
-// event), falls back to the browser speech engine. Emits 'readingFinished'
-// exactly once when reading completes.
-async function speakClue(text) {
-  let finished = false;
-  function done() {
-    if (finished) return;
-    finished = true;
-    socket.emit('readingFinished');
-  }
+// ── Clock synchronization (NTP-style) ────────────────────────
+// Each contestant estimates its offset from the server clock so that a single
+// server-chosen moment (buzzArmTime / audioStartTime) maps to the same real
+// instant on every device. This is what makes the buzz race fair.
+let clockOffset = 0;
+function serverNow() { return Date.now() + clockOffset; }
 
-  if (!isHost) return;
+(function runClockSync() {
+  const samples = [];
+  function ping() { socket.emit('syncPing', Date.now()); }
+  socket.on('syncPong', ({ t0, serverTime }) => {
+    const t1 = Date.now();
+    const rtt = t1 - t0;
+    // serverTime was taken ~midway through the round trip
+    samples.push({ rtt, offset: serverTime - (t0 + t1) / 2 });
+    if (samples.length < 8) {
+      setTimeout(ping, 120);
+    } else {
+      samples.sort((a, b) => a.rtt - b.rtt);           // trust the lowest-latency samples
+      const best = samples.slice(0, 3);
+      clockOffset = best.reduce((s, x) => s + x.offset, 0) / best.length;
+    }
+  });
+  socket.on('connect', () => { samples.length = 0; ping(); });
+  // Re-sync periodically to correct drift
+  setInterval(() => { samples.length = 0; ping(); }, 25000);
+})();
 
+// ── Synced clue audio (plays on EVERY device at the same instant) ──
+let currentSource = null;
+async function scheduleClueAudio() {
+  if (!state || !state.currentQuestion || state.audioStartTime == null) return;
+  const q = state.currentQuestion;
+  const key = `${q.round}|${q.category}|${q.valueIndex}`;
+  if (key === activeAudioKey) return;   // already scheduled for this question
+  activeAudioKey = key;
   try {
-    const res = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error('tts unavailable');
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    if (clueAudio) { clueAudio.pause(); clueAudio = null; }
-    clueAudio = new Audio(url);
-    clueAudio.onended = () => { URL.revokeObjectURL(url); done(); };
-    clueAudio.onerror = () => { URL.revokeObjectURL(url); done(); };
-    // Fallback: if 'ended' never fires, finish based on audio duration
-    clueAudio.onloadedmetadata = () => {
-      const ms = (clueAudio.duration || (text.length / 12)) * 1000 + 1500;
-      setTimeout(done, ms);
-    };
-    setTimeout(done, Math.ceil(text.length / 9) * 1000 + 6000); // hard cap
-    await clueAudio.play();
-    return;
-  } catch (err) {
-    // Fall back to browser speech synthesis
-  }
-
-  if (window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.9;
-    utter.pitch = 1;
-    utter.onend = done;
-    const fallbackMs = Math.ceil(text.length / 12) * 1000 + 2500;
-    setTimeout(done, fallbackMs);
-    window.speechSynthesis.speak(utter);
-  } else {
-    // No speech available — open buzzing after a short estimated delay
-    setTimeout(done, Math.ceil(text.length / 12) * 1000 + 1000);
+    const res = await fetch('/api/tts/current');
+    if (!res.ok) return;                // no audio (e.g. no API key) — visual cue still syncs
+    const arrBuf = await res.arrayBuffer();
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    const audioBuf = await ctx.decodeAudioData(arrBuf);
+    if (currentSource) { try { currentSource.stop(); } catch (e) {} }
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(ctx.destination);
+    currentSource = src;
+    // Convert the server-clock start time to this device's audio clock
+    const delaySec = Math.max(0, (state.audioStartTime - serverNow()) / 1000);
+    src.start(ctx.currentTime + delaySec);
+  } catch (e) {
+    /* decoding/playback failed — game still works from the on-screen text */
   }
 }
 
@@ -214,10 +217,7 @@ socket.on('state', (s) => {
   if (myId) render();
 });
 
-// Reading finished — just re-render the button from the new state
-socket.on('readingDone', () => updateBuzzButton());
-
-// Nobody buzzed within the time limit
+// Nobody buzzed within the time limit — play the "nobody got it" buzzers
 socket.on('questionTimeout', () => {
   playWrongSound();
 });
@@ -226,44 +226,58 @@ socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
 
-let buzzRefreshTimer = null;
+// A lightweight ticker re-evaluates the buzz button as the synced clock crosses
+// the arm time / a lockout expiry (no server message fires at those instants).
+let buzzTicker = null;
+function ensureBuzzTicker(active) {
+  if (active && !buzzTicker) buzzTicker = setInterval(updateBuzzButton, 80);
+  else if (!active && buzzTicker) { clearInterval(buzzTicker); buzzTicker = null; }
+}
 
-// The buzz button is rendered ENTIRELY from authoritative server state, so it
-// can never get stuck in a stale local state. The only inputs are: is there a
-// buzzable question, am I already a buzzer, and my server-side lockout (if I
-// buzzed early). A pending optimistic disable is cleared by the next state.
+// The buzz button is rendered from authoritative server state plus the synced
+// clock. Pressing before buzzArmTime (or during a lockout) is allowed but
+// penalized server-side — that's the anti-mash mechanic.
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
-  if (buzzRefreshTimer) { clearTimeout(buzzRefreshTimer); buzzRefreshTimer = null; }
 
   const q = state && state.currentQuestion;
   if (!q || !state.buzzOpen || q.isDailyDouble || q.revealed) {
     btn.classList.add('hidden');
+    ensureBuzzTicker(false);
+    return;
+  }
+  // A player who already answered wrong is out for this question
+  if ((q.bannedPlayers || []).includes(myId)) {
+    btn.classList.add('hidden');
+    ensureBuzzTicker(false);
     return;
   }
 
   const buzzers = state.buzzers || [];
   const iAmBuzzer = buzzers.some(b => b.id === myId);
-  const someoneBuzzed = buzzers.length > 0;
-  const myLock = (state.lockUntil && state.lockUntil[myId]) || 0;
-  const now = Date.now();
+  if (buzzers.length > 0) {
+    // Someone won the buzz
+    if (iAmBuzzer) { btn.classList.remove('hidden'); btn.disabled = true; btn.textContent = 'BUZZED!'; }
+    else btn.classList.add('hidden');
+    ensureBuzzTicker(false);
+    return;
+  }
 
-  // Someone already won the buzz (and it isn't me): hide the button
-  if (someoneBuzzed && !iAmBuzzer) { btn.classList.add('hidden'); return; }
   btn.classList.remove('hidden');
+  ensureBuzzTicker(true);
 
-  if (iAmBuzzer) {
-    btn.disabled = true; btn.textContent = 'BUZZED!';
-  } else if (myLock && now < myLock) {
-    btn.disabled = true;
-    btn.textContent = state.readingDone ? 'WAIT…' : 'TOO EARLY!';
-    // Re-check when my finite lockout expires
-    if (myLock < Number.MAX_SAFE_INTEGER) {
-      buzzRefreshTimer = setTimeout(updateBuzzButton, myLock - now + 40);
-    }
+  const now = serverNow();
+  const arm = state.buzzArmTime;
+  const myLock = (state.lockUntil && state.lockUntil[myId]) || 0;
+
+  if (myLock && now < myLock) {
+    btn.disabled = true; btn.textContent = 'TOO EARLY!';
   } else if (buzzPending) {
     btn.disabled = true; btn.textContent = 'BUZZING…';
+  } else if (arm != null && now < arm) {
+    // Pre-arm: pressable, but pressing now penalizes you (anti-mash)
+    btn.disabled = false; btn.textContent = 'WAIT…';
   } else {
     btn.disabled = false; btn.textContent = 'BUZZ IN';
   }
@@ -440,24 +454,25 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // New question? (host) start reading aloud. Buzz state is fully derived from
-  // server state, so nothing local needs resetting here.
+  // New question? reset the optimistic buzz flag.
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
-  if (questionKey !== activeQuestionKey) {
-    activeQuestionKey = questionKey;
+  if (questionKey !== shownQuestionKey) {
+    shownQuestionKey = questionKey;
     buzzPending = false;
-    if (isHost) speakClue(q.clue);
   }
+  // Schedule synced audio on EVERY device (deduped internally per question)
+  scheduleClueAudio();
 
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
   const revealed = !!q.revealed;
-  const ddReadyToJudge = q.isDailyDouble && state.dailyDoubleWager !== null && state.readingDone;
+  const armed = state.buzzArmTime != null && serverNow() >= state.buzzArmTime;
+  const ddReadyToJudge = q.isDailyDouble && state.dailyDoubleWager !== null;
 
   // Reading status indicator (hidden once someone buzzed or the answer is shown)
   const readingStatus = document.getElementById('readingStatus');
   if (!hasTopBuzzer && !revealed && !q.isDailyDouble) {
     readingStatus.classList.remove('hidden');
-    readingStatus.textContent = state.readingDone ? '🔔 BUZZ NOW!' : '🔊 Reading…';
+    readingStatus.textContent = armed ? '🔔 BUZZ NOW!' : '🔊 Reading…';
   } else {
     readingStatus.classList.add('hidden');
   }
@@ -507,12 +522,10 @@ function renderQuestionModal() {
     const b = state.buzzers[0];
     const player = state.players[b.id];
     const color = player ? player.color : '#888';
-    const time = new Date(b.clientTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    const ms = b.clientTimestamp % 1000;
     buzzersEl.innerHTML = `
       <div class="buzzer-entry" style="background:${color}">
         <span><span class="place">🥇</span>${escHtml(b.name)}</span>
-        <span class="buzz-time">${time}.${String(ms).padStart(3,'0')}</span>
+        <span class="buzz-time">buzzed in</span>
       </div>
     `;
   } else {
@@ -605,13 +618,17 @@ function submitWager(max) {
 // ── Player Actions ────────────────────────────────────────────
 function buzz() {
   if (!state || !state.currentQuestion || !state.buzzOpen) return;
-  if (buzzPending) return;
-  buzzPending = true;
-  updateBuzzButton(); // optimistic "BUZZING…"
-  socket.emit('buzz', { clientTimestamp: Date.now() });
-  // Clear the optimistic flag shortly; by then the authoritative state has
-  // arrived and updateBuzzButton reflects the true result.
-  setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 800);
+  const armed = state.buzzArmTime != null && serverNow() >= state.buzzArmTime;
+  // Send my best estimate of the current SERVER time so buzzes are compared on
+  // a common clock. Pressing early is allowed but the server will penalize it.
+  socket.emit('buzz', { ts: serverNow() });
+  if (armed) {
+    buzzPending = true;            // optimistic only for real (armed) buzzes
+    updateBuzzButton();
+    setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 600);
+  } else {
+    updateBuzzButton();           // pre-arm press → will show TOO EARLY from state
+  }
 }
 
 // ── Utils ─────────────────────────────────────────────────────

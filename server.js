@@ -16,15 +16,12 @@ app.get('/api/categories', (req, res) => {
   res.sendFile(path.join(__dirname, 'categories.json'));
 });
 
-// ElevenLabs TTS proxy
-app.post('/api/tts', async (req, res) => {
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'no text' });
-  if (!process.env.ELEVENLABS_API_KEY) return res.status(503).json({ error: 'no key' });
-
+// Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
+async function generateTTS(text) {
+  if (!process.env.ELEVENLABS_API_KEY) return null;
   try {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
       method: 'POST',
       headers: {
         'xi-api-key': process.env.ELEVENLABS_API_KEY,
@@ -37,35 +34,58 @@ app.post('/api/tts', async (req, res) => {
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       }),
     });
-
     if (!response.ok) {
-      const err = await response.text();
-      console.error('ElevenLabs error:', err);
-      return res.status(500).json({ error: err });
+      console.error('ElevenLabs error:', await response.text());
+      return null;
     }
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Cache-Control', 'no-cache');
-    const buffer = await response.arrayBuffer();
-    res.send(Buffer.from(buffer));
+    return Buffer.from(await response.arrayBuffer());
   } catch (err) {
     console.error('TTS error:', err);
-    res.status(500).json({ error: err.message });
+    return null;
   }
+}
+
+// The current question's audio, cached so every device fetches the same bytes
+// with a single ElevenLabs call. Keyed by an id that changes per question.
+let currentAudio = null; // { id, buffer }
+
+app.get('/api/tts/current', (req, res) => {
+  if (!currentAudio) return res.status(404).end();
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(currentAudio.buffer);
+});
+
+// Legacy direct TTS (still used as a fallback by the client if needed)
+app.post('/api/tts', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'no text' });
+  const buffer = await generateTTS(text);
+  if (!buffer) return res.status(503).json({ error: 'tts unavailable' });
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(buffer);
 });
 
 const client = new Anthropic();
+
+const LEAD_IN_MS = 2500;       // time for clients to fetch+decode audio before it starts
+const FIRST_TIMEOUT_MS = 8000; // first buzz window after the clue finishes
+const RETRY_TIMEOUT_MS = 3000; // buzz window after a wrong answer
+const REARM_MS = 1000;         // synced "get ready" before buzzers re-arm on retry
+const SETTLE_MS = 250;         // collect near-simultaneous buzzes, then pick earliest
+const LOCKOUT_MS = 250;        // early/mash penalty
 
 let gameState = {
   phase: 'lobby',
   players: {},
   categories: [],
   board: { single: null, double: null },
-  currentQuestion: null,
-  buzzers: [],        // [{ id, name, clientTimestamp }] — valid buzzes, sorted
-  buzzOpen: false,    // true as soon as question is selected (during reading)
-  readingDone: false, // flips when host signals audio finished
-  readingDoneTime: null,
+  currentQuestion: null,   // also carries: audioStartTime, buzzArmTime, bannedPlayers, revealed
+  buzzers: [],             // [{ id, name, ts }] — the locked-in winner (length 1) when chosen
+  buzzOpen: false,
+  audioStartTime: null,    // server-clock ms when audio should start on all devices
+  buzzArmTime: null,       // server-clock ms when buzzers go live (audio end / re-arm)
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -73,55 +93,57 @@ let gameState = {
   usedSquares: { single: {}, double: {} },
 };
 
-// Per-question transient maps (not part of broadcast state)
-let earlyBuzzers = {}; // playerId -> true (buzzed before reading finished)
-let lockUntil = {};    // playerId -> timestamp they may buzz again
-
+// Per-question transient state (lockUntil is broadcast; the rest is server-only)
+let lockUntil = {};        // playerId -> server-clock ts they may buzz again
+let pendingBuzzes = [];     // valid buzzes collected during the settle window
+let buzzSettleHandle = null;
 let questionTimeoutHandle = null;
 let revealTimeoutHandle = null;
-let readingSafetyHandle = null;
 
 function clearQuestionTimeout() {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
   if (revealTimeoutHandle) { clearTimeout(revealTimeoutHandle); revealTimeoutHandle = null; }
-  if (readingSafetyHandle) { clearTimeout(readingSafetyHandle); readingSafetyHandle = null; }
+  if (buzzSettleHandle) { clearTimeout(buzzSettleHandle); buzzSettleHandle = null; }
 }
 
-// 8 seconds after reading finishes with nobody buzzed in → nobody got it.
-// Reveal the answer to everyone for 5 seconds; board control is retained.
-function startTimeoutIfEmpty() {
+// Schedule the "nobody buzzed" timeout to fire `windowMs` after buzzers arm.
+function scheduleNoBuzzTimeout(windowMs) {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
-  if (gameState.buzzers.length > 0) return;
-  // Daily doubles are not timed — the controlling contestant has unlimited time.
-  if (gameState.currentQuestion && gameState.currentQuestion.isDailyDouble) return;
+  const fireIn = Math.max(0, gameState.buzzArmTime - Date.now()) + windowMs;
   questionTimeoutHandle = setTimeout(() => {
     questionTimeoutHandle = null;
-    if (gameState.currentQuestion && gameState.buzzers.length === 0) {
-      io.emit('questionTimeout');
+    if (gameState.currentQuestion && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
+      io.emit('questionTimeout');         // clients play the "nobody got it" buzzers
       revealAnswerThenClear();
     }
-  }, 8000);
+  }, fireIn);
 }
 
-// Reading has finished (either host audio reported it, or the safety net fired).
-function markReadingDone() {
-  if (readingSafetyHandle) { clearTimeout(readingSafetyHandle); readingSafetyHandle = null; }
-  if (!gameState.currentQuestion || gameState.readingDone) return;
-
-  gameState.readingDone = true;
-  gameState.readingDoneTime = Date.now();
-
-  // Anyone who buzzed early is locked out until 250ms after reading completes
-  const unlockAt = gameState.readingDoneTime + 250;
-  Object.keys(earlyBuzzers).forEach(id => { lockUntil[id] = unlockAt; });
-  io.emit('readingDone', { unlockAt, lockedIds: Object.keys(earlyBuzzers) });
-
-  startTimeoutIfEmpty();
+// A valid buzz arrived: after a short settle, the earliest synced timestamp wins.
+function finalizeBuzz() {
+  buzzSettleHandle = null;
+  if (!gameState.currentQuestion || pendingBuzzes.length === 0) return;
+  pendingBuzzes.sort((a, b) => a.ts - b.ts);
+  gameState.buzzers = [pendingBuzzes[0]];
+  gameState.buzzOpen = false;
+  pendingBuzzes = [];
   broadcastState();
 }
 
-// Show the answer to everyone for 5 seconds, then clear the board.
+// Reopen buzzing for everyone not banned, re-armed at a synced moment.
+function reopenBuzzers(windowMs) {
+  lockUntil = {};
+  pendingBuzzes = [];
+  gameState.buzzers = [];
+  gameState.buzzOpen = true;
+  gameState.buzzArmTime = Date.now() + REARM_MS;
+  scheduleNoBuzzTimeout(windowMs);
+  broadcastState();
+}
+
+// Show the answer to EVERYONE for 5 seconds, then clear the board.
 function revealAnswerThenClear() {
+  clearQuestionTimeout();
   if (!gameState.currentQuestion) return;
   gameState.buzzOpen = false;
   gameState.currentQuestion.revealed = true;
@@ -129,14 +151,18 @@ function revealAnswerThenClear() {
   revealTimeoutHandle = setTimeout(() => {
     revealTimeoutHandle = null;
     gameState.currentQuestion = null;
-    gameState.readingDone = false;
-    gameState.readingDoneTime = null;
+    gameState.audioStartTime = null;
+    gameState.buzzArmTime = null;
+    currentAudio = null;
     broadcastState();
   }, 5000);
 }
 
 function resetGame() {
   clearQuestionTimeout();
+  lockUntil = {};
+  pendingBuzzes = [];
+  currentAudio = null;
   gameState = {
     phase: 'lobby',
     players: {},
@@ -145,8 +171,8 @@ function resetGame() {
     currentQuestion: null,
     buzzers: [],
     buzzOpen: false,
-    readingDone: false,
-    readingDoneTime: null,
+    audioStartTime: null,
+    buzzArmTime: null,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -262,6 +288,18 @@ function pickDailyDoubles(board) {
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
 
+  // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
+  if (process.env.TEST_HOOKS === '1') {
+    socket.on('__test_inject', ({ board, phase }) => {
+      gameState.board.single = board;
+      gameState.board.double = board;
+      gameState.dailyDoubles = [];
+      gameState.phase = phase || 'single';
+      gameState.categories = Object.keys(board);
+      broadcastState();
+    });
+  }
+
   socket.on('join', ({ name, isHost }) => {
     if (isHost) {
       gameState.hostId = socket.id;
@@ -316,7 +354,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('selectSquare', ({ round, category, valueIndex }) => {
+  // Clock sync: client measures round-trip and estimates its offset from server time
+  socket.on('syncPing', (t0) => {
+    socket.emit('syncPong', { t0, serverTime: Date.now() });
+  });
+
+  socket.on('selectSquare', async ({ round, category, valueIndex }) => {
     if (socket.id !== gameState.hostId) return;
     const key = `${category}|${valueIndex}`;
     if (gameState.usedSquares[round][key]) return;
@@ -330,61 +373,68 @@ io.on('connection', (socket) => {
       gameState.dailyDoubles.some(dd => dd.cat === category && dd.valueIndex === valueIndex);
 
     clearQuestionTimeout();
-    earlyBuzzers = {};
     lockUntil = {};
+    pendingBuzzes = [];
+    gameState.usedSquares[round][key] = true;
     gameState.currentQuestion = {
       round, category, valueIndex, dollarValue,
       clue: clue.clue, answer: clue.answer, isDailyDouble,
+      bannedPlayers: [],
     };
     gameState.buzzers = [];
-    // Daily doubles have no buzzing race — only the controlling player answers.
-    gameState.buzzOpen = !isDailyDouble;
-    gameState.readingDone = false;
-    gameState.readingDoneTime = null;
+    gameState.buzzOpen = false;       // opens at buzzArmTime
+    gameState.audioStartTime = null;
+    gameState.buzzArmTime = null;
     gameState.dailyDoubleWager = null;
-    gameState.usedSquares[round][key] = true;
+    broadcastState();
 
-    // Safety net: if the host's audio never reports "finished" (TTS glitch,
-    // backgrounded tab), force reading-done after a generous delay so buzzers
-    // never get stuck in the early-penalty state.
-    const estMs = Math.ceil(clue.clue.length / 9) * 1000 + 8000;
-    readingSafetyHandle = setTimeout(() => {
-      readingSafetyHandle = null;
-      markReadingDone();
-    }, estMs);
+    // Generate the clue audio once on the server; every device fetches the same
+    // bytes and plays it in sync, so no contestant hears it earlier than another.
+    const audioId = `${round}|${category}|${valueIndex}|${Date.now()}`;
+    const buffer = await generateTTS(clue.clue);
+    // The question may have been cleared/replaced while awaiting TTS
+    if (!gameState.currentQuestion || gameState.currentQuestion.clue !== clue.clue) return;
 
+    currentAudio = buffer ? { id: audioId, buffer } : null;
+    // Estimate clip duration: 128kbps CBR mp3 ≈ bytes*8/128000 sec, + tail.
+    const durationMs = buffer
+      ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
+      : Math.ceil(clue.clue.length / 12 * 1000) + 1500;
+
+    gameState.audioStartTime = Date.now() + LEAD_IN_MS;
+    if (!isDailyDouble) {
+      gameState.buzzOpen = true;
+      gameState.buzzArmTime = gameState.audioStartTime + durationMs;
+      scheduleNoBuzzTimeout(FIRST_TIMEOUT_MS);
+    }
     broadcastState();
   });
 
-  // Host signals that audio finished reading
-  socket.on('readingFinished', () => {
-    if (socket.id !== gameState.hostId) return;
-    markReadingDone();
-  });
-
-  socket.on('buzz', ({ clientTimestamp }) => {
-    if (!gameState.buzzOpen || !gameState.currentQuestion) return;
+  // ts = the buzzing client's estimate of current SERVER time (synced clock)
+  socket.on('buzz', ({ ts }) => {
+    const q = gameState.currentQuestion;
+    if (!q || q.isDailyDouble || q.revealed || !gameState.buzzOpen) return;
     const player = gameState.players[socket.id];
     if (!player) return;
-    if (gameState.buzzers.find(b => b.id === socket.id)) return; // already locked in
+    if (q.bannedPlayers.includes(socket.id)) return;          // already answered wrong
+    if (gameState.buzzers.some(b => b.id === socket.id)) return;
+    if (pendingBuzzes.some(b => b.id === socket.id)) return;   // already in this window
+    if (typeof ts !== 'number') ts = Date.now();
 
-    // Early buzz (before reading finished) → penalize. The lockout is held
-    // open (sentinel) until reading finishes, then resolved to +250ms.
-    if (!gameState.readingDone) {
-      earlyBuzzers[socket.id] = true;
-      lockUntil[socket.id] = Number.MAX_SAFE_INTEGER;
+    const armTime = gameState.buzzArmTime;
+    const locked = lockUntil[socket.id] && ts < lockUntil[socket.id];
+    // Pressed before buzzers armed, or during a personal lockout → penalize.
+    // Every such press RESETS the lockout, so mashing keeps you frozen.
+    if (armTime == null || ts < armTime || locked) {
+      lockUntil[socket.id] = ts + LOCKOUT_MS;
       broadcastState();
       return;
     }
 
-    // Still serving a lockout penalty — state already reflects it
-    if (lockUntil[socket.id] && Date.now() < lockUntil[socket.id]) return;
-
-    // Valid buzz
-    gameState.buzzers.push({ id: socket.id, name: player.name, clientTimestamp });
-    gameState.buzzers.sort((a, b) => a.clientTimestamp - b.clientTimestamp);
-    clearQuestionTimeout();
-    broadcastState();
+    // Valid buzz — collect for a short settle window, then earliest ts wins.
+    if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
+    pendingBuzzes.push({ id: socket.id, name: player.name, ts });
+    if (!buzzSettleHandle) buzzSettleHandle = setTimeout(finalizeBuzz, SETTLE_MS);
   });
 
   socket.on('awardPoints', ({ playerId, correct }) => {
@@ -396,13 +446,27 @@ io.on('connection', (socket) => {
     if (gameState.players[playerId]) {
       gameState.players[playerId].score += correct ? value : -value;
     }
-    if (correct) gameState.boardControl = playerId;
-    clearQuestionTimeout();
-    gameState.currentQuestion = null;
-    gameState.buzzOpen = false;
+
+    if (correct) {
+      gameState.boardControl = playerId;
+      revealAnswerThenClear();            // show answer to everyone, then clear
+      return;
+    }
+
+    // WRONG: that player is out for this question; reopen for the rest.
+    if (!q.bannedPlayers.includes(playerId)) q.bannedPlayers.push(playerId);
     gameState.buzzers = [];
-    gameState.readingDone = false;
-    gameState.readingDoneTime = null;
+
+    // Daily doubles have a single player — a wrong answer ends the clue.
+    if (q.isDailyDouble) { revealAnswerThenClear(); return; }
+
+    const contestants = Object.keys(gameState.players);
+    const remaining = contestants.filter(id => !q.bannedPlayers.includes(id));
+    if (remaining.length === 0) {
+      revealAnswerThenClear();            // nobody left to try
+    } else {
+      reopenBuzzers(RETRY_TIMEOUT_MS);    // 3s for the others
+    }
     broadcastState();
   });
 
