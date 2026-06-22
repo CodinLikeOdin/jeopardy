@@ -23,7 +23,7 @@ app.post('/api/tts', async (req, res) => {
   if (!process.env.ELEVENLABS_API_KEY) return res.status(503).json({ error: 'no key' });
 
   try {
-    const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB'; // Adam
+    const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
