@@ -16,28 +16,96 @@ app.get('/api/categories', (req, res) => {
   res.sendFile(path.join(__dirname, 'categories.json'));
 });
 
+// ElevenLabs TTS proxy
+app.post('/api/tts', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'no text' });
+  if (!process.env.ELEVENLABS_API_KEY) return res.status(503).json({ error: 'no key' });
+
+  try {
+    const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB'; // Adam
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': process.env.ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error('ElevenLabs error:', err);
+      return res.status(500).json({ error: err });
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-cache');
+    const buffer = await response.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error('TTS error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const client = new Anthropic();
 
-// Game state
 let gameState = {
-  phase: 'lobby', // lobby, setup, generating, single, double, gameover
-  players: {},    // id -> { name, score, color }
-  categories: [], // array of category names
-  board: {
-    single: null,
-    double: null,
-  },
+  phase: 'lobby',
+  players: {},
+  categories: [],
+  board: { single: null, double: null },
   currentQuestion: null,
-  buzzers: [],           // [{ id, name, clientTimestamp, serverTimestamp }]
-  buzzOpen: false,
+  buzzers: [],        // [{ id, name, clientTimestamp }] — valid buzzes, sorted
+  buzzOpen: false,    // true as soon as question is selected (during reading)
+  readingDone: false, // flips when host signals audio finished
+  readingDoneTime: null,
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
-  boardControl: null,    // playerId who has control of the board
+  boardControl: null,
   usedSquares: { single: {}, double: {} },
 };
 
+// Per-question transient maps (not part of broadcast state)
+let earlyBuzzers = {}; // playerId -> true (buzzed before reading finished)
+let lockUntil = {};    // playerId -> timestamp they may buzz again
+
+let questionTimeoutHandle = null;
+
+function clearQuestionTimeout() {
+  if (questionTimeoutHandle) {
+    clearTimeout(questionTimeoutHandle);
+    questionTimeoutHandle = null;
+  }
+}
+
+// 3 seconds after reading finishes with nobody buzzed in → nobody got it,
+// board control is retained, play the "no answer" buzzers.
+function startTimeoutIfEmpty() {
+  clearQuestionTimeout();
+  if (gameState.buzzers.length > 0) return;
+  questionTimeoutHandle = setTimeout(() => {
+    questionTimeoutHandle = null;
+    if (gameState.currentQuestion && gameState.buzzers.length === 0) {
+      gameState.currentQuestion = null;
+      gameState.buzzOpen = false;
+      gameState.readingDone = false;
+      gameState.readingDoneTime = null;
+      io.emit('questionTimeout');
+      broadcastState();
+    }
+  }, 3000);
+}
+
 function resetGame() {
+  clearQuestionTimeout();
   gameState = {
     phase: 'lobby',
     players: {},
@@ -46,6 +114,8 @@ function resetGame() {
     currentQuestion: null,
     buzzers: [],
     buzzOpen: false,
+    readingDone: false,
+    readingDoneTime: null,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -55,16 +125,7 @@ function resetGame() {
 }
 
 function broadcastState() {
-  io.emit('state', sanitizeState());
-}
-
-function sanitizeState() {
-  // Don't send answer to players during active question
-  const s = JSON.parse(JSON.stringify(gameState));
-  if (s.currentQuestion && s.phase !== 'reveal') {
-    // answer is hidden until host reveals
-  }
-  return s;
+  io.emit('state', JSON.parse(JSON.stringify(gameState)));
 }
 
 function extractJSON(text) {
@@ -107,10 +168,8 @@ Rules:
     messages: [{ role: 'user', content: generatePrompt }],
   });
 
-  let text = generateResponse.content[0].text.trim();
-  const generated = JSON.parse(extractJSON(text));
+  const generated = JSON.parse(extractJSON(generateResponse.content[0].text.trim()));
 
-  // Verification pass — check each clue for factual accuracy
   const verifyPrompt = `You are a fact-checker for a Jeopardy! game. Review each clue and answer pair below and check every specific fact stated in the clue.
 
 Clues to verify:
@@ -137,21 +196,15 @@ Return ONLY valid JSON with exactly 5 clues in this format, no extra text:
     messages: [{ role: 'user', content: verifyPrompt }],
   });
 
-  let verifyText = verifyResponse.content[0].text.trim();
-  const verified = JSON.parse(extractJSON(verifyText));
-  return verified.clues;
+  return JSON.parse(extractJSON(verifyResponse.content[0].text.trim())).clues;
 }
 
 function pickDailyDoubles(board) {
-  // Pick 2 random squares in double jeopardy, not in row 0 (200)
   const cats = Object.keys(board);
   const squares = [];
   for (const cat of cats) {
-    for (let i = 1; i < 5; i++) { // skip index 0 (easiest/cheapest)
-      squares.push({ cat, valueIndex: i });
-    }
+    for (let i = 1; i < 5; i++) squares.push({ cat, valueIndex: i });
   }
-  // shuffle and pick 2
   for (let i = squares.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [squares[i], squares[j]] = [squares[j], squares[i]];
@@ -178,19 +231,15 @@ io.on('connection', (socket) => {
   socket.on('setCategories', async ({ singleCategories, doubleCategories }) => {
     if (socket.id !== gameState.hostId) return;
     gameState.phase = 'generating';
-    gameState.categories = singleCategories; // kept for legacy reference
+    gameState.categories = singleCategories;
     broadcastState();
 
     try {
       const singleBoard = {};
-      for (const cat of singleCategories) {
-        singleBoard[cat] = await generateQuestions(cat);
-      }
+      for (const cat of singleCategories) singleBoard[cat] = await generateQuestions(cat);
 
       const doubleBoard = {};
-      for (const cat of doubleCategories) {
-        doubleBoard[cat] = await generateQuestions(cat);
-      }
+      for (const cat of doubleCategories) doubleBoard[cat] = await generateQuestions(cat);
 
       gameState.board.single = singleBoard;
       gameState.board.double = doubleBoard;
@@ -212,58 +261,69 @@ io.on('connection', (socket) => {
 
     const board = round === 'single' ? gameState.board.single : gameState.board.double;
     const clue = board[category][valueIndex];
-    const singleValues = [100, 200, 300, 400, 500];
-    const doubleValues = [200, 400, 600, 800, 1000];
-    const values = round === 'single' ? singleValues : doubleValues;
+    const values = round === 'single' ? [100,200,300,400,500] : [200,400,600,800,1000];
     const dollarValue = values[valueIndex];
 
     const isDailyDouble = round === 'double' &&
       gameState.dailyDoubles.some(dd => dd.cat === category && dd.valueIndex === valueIndex);
 
+    clearQuestionTimeout();
+    earlyBuzzers = {};
+    lockUntil = {};
     gameState.currentQuestion = {
-      round,
-      category,
-      valueIndex,
-      dollarValue,
-      clue: clue.clue,
-      answer: clue.answer,
-      isDailyDouble,
-      selectedBy: null,
+      round, category, valueIndex, dollarValue,
+      clue: clue.clue, answer: clue.answer, isDailyDouble,
     };
     gameState.buzzers = [];
-    gameState.buzzOpen = false;
+    gameState.buzzOpen = true;   // open immediately (buzzing during reading is penalized)
+    gameState.readingDone = false;
+    gameState.readingDoneTime = null;
     gameState.dailyDoubleWager = null;
     gameState.usedSquares[round][key] = true;
     broadcastState();
   });
 
-  socket.on('openBuzzers', () => {
+  // Host signals that audio finished reading
+  socket.on('readingFinished', () => {
     if (socket.id !== gameState.hostId) return;
-    gameState.buzzOpen = true;
-    gameState.buzzers = [];
-    io.emit('buzzersOpen');
+    if (!gameState.currentQuestion || gameState.readingDone) return;
+
+    gameState.readingDone = true;
+    gameState.readingDoneTime = Date.now();
+
+    // Anyone who buzzed early is locked out until 250ms after reading completes
+    const unlockAt = gameState.readingDoneTime + 250;
+    Object.keys(earlyBuzzers).forEach(id => { lockUntil[id] = unlockAt; });
+    io.emit('readingDone', { unlockAt, lockedIds: Object.keys(earlyBuzzers) });
+
+    startTimeoutIfEmpty();
     broadcastState();
   });
 
   socket.on('buzz', ({ clientTimestamp }) => {
-    if (!gameState.buzzOpen) return;
-    const alreadyBuzzed = gameState.buzzers.find(b => b.id === socket.id);
-    if (alreadyBuzzed) return;
+    if (!gameState.buzzOpen || !gameState.currentQuestion) return;
     const player = gameState.players[socket.id];
     if (!player) return;
-    gameState.buzzers.push({
-      id: socket.id,
-      name: player.name,
-      clientTimestamp,
-      serverTimestamp: Date.now(),
-    });
-    gameState.buzzers.sort((a, b) => a.clientTimestamp - b.clientTimestamp);
-    broadcastState();
-  });
+    if (gameState.buzzers.find(b => b.id === socket.id)) return; // already locked in
 
-  socket.on('closeBuzzers', () => {
-    if (socket.id !== gameState.hostId) return;
-    gameState.buzzOpen = false;
+    // Early buzz (before reading finished) → reject + penalize
+    if (!gameState.readingDone) {
+      earlyBuzzers[socket.id] = true;
+      socket.emit('buzzResult', { status: 'early' });
+      return;
+    }
+
+    // Still serving a lockout penalty
+    if (lockUntil[socket.id] && Date.now() < lockUntil[socket.id]) {
+      socket.emit('buzzResult', { status: 'locked', unlockAt: lockUntil[socket.id] });
+      return;
+    }
+
+    // Valid buzz
+    gameState.buzzers.push({ id: socket.id, name: player.name, clientTimestamp });
+    gameState.buzzers.sort((a, b) => a.clientTimestamp - b.clientTimestamp);
+    clearQuestionTimeout();
+    socket.emit('buzzResult', { status: 'accepted' });
     broadcastState();
   });
 
@@ -272,26 +332,17 @@ io.on('connection', (socket) => {
     const q = gameState.currentQuestion;
     if (!q) return;
     const value = q.isDailyDouble && gameState.dailyDoubleWager !== null
-      ? gameState.dailyDoubleWager
-      : q.dollarValue;
+      ? gameState.dailyDoubleWager : q.dollarValue;
     if (gameState.players[playerId]) {
       gameState.players[playerId].score += correct ? value : -value;
     }
-    if (correct) {
-      gameState.boardControl = playerId;
-    }
-    // Either way: question ends after the first buzzer is judged
+    if (correct) gameState.boardControl = playerId;
+    clearQuestionTimeout();
     gameState.currentQuestion = null;
     gameState.buzzOpen = false;
     gameState.buzzers = [];
-    broadcastState();
-  });
-
-  socket.on('skipQuestion', () => {
-    if (socket.id !== gameState.hostId) return;
-    gameState.currentQuestion = null;
-    gameState.buzzOpen = false;
-    gameState.buzzers = [];
+    gameState.readingDone = false;
+    gameState.readingDoneTime = null;
     broadcastState();
   });
 
@@ -303,12 +354,12 @@ io.on('connection', (socket) => {
 
   socket.on('advanceRound', () => {
     if (socket.id !== gameState.hostId) return;
+    clearQuestionTimeout();
     if (gameState.phase === 'single') {
       gameState.phase = 'double';
       gameState.currentQuestion = null;
       gameState.buzzers = [];
       gameState.buzzOpen = false;
-      // boardControl carries over into double jeopardy
     } else if (gameState.phase === 'double') {
       gameState.phase = 'gameover';
     }

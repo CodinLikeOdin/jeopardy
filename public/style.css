@@ -388,6 +388,17 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 #wagerSection { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
 #wagerSection input { color: #000; max-width: 120px; }
 
+/* Reading status indicator */
+#readingStatus {
+  font-size: 1.1rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+  padding: 8px 18px;
+  border-radius: 20px;
+  background: rgba(0,0,0,0.35);
+  color: #F5A623;
+}
+
 /* Buzzers */
 #buzzers {
   width: 100%;

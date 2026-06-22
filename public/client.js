@@ -96,41 +96,105 @@ const socket = io();
 let myId = null;
 let isHost = false;
 let state = null;
-let hasBuzzed = false;
-let lastSpokenQuestion = null;
+let buzzState = 'ready';      // ready | buzzed | early | locked
+let activeQuestionKey = null; // detects when a new question starts
+let clueAudio = null;
 
-function speakClue(text) {
-  if (!window.speechSynthesis) {
-    if (isHost) socket.emit('openBuzzers');
+// Read the clue aloud (host only). Tries ElevenLabs first (reliable 'ended'
+// event), falls back to the browser speech engine. Emits 'readingFinished'
+// exactly once when reading completes.
+async function speakClue(text) {
+  let finished = false;
+  function done() {
+    if (finished) return;
+    finished = true;
+    socket.emit('readingFinished');
+  }
+
+  if (!isHost) return;
+
+  try {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error('tts unavailable');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (clueAudio) { clueAudio.pause(); clueAudio = null; }
+    clueAudio = new Audio(url);
+    clueAudio.onended = () => { URL.revokeObjectURL(url); done(); };
+    clueAudio.onerror = () => { URL.revokeObjectURL(url); done(); };
+    await clueAudio.play();
     return;
+  } catch (err) {
+    // Fall back to browser speech synthesis
   }
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.rate = 0.9;
-  utter.pitch = 1;
-  if (isHost) {
-    let opened = false;
-    function openOnce() {
-      if (!opened) { opened = true; socket.emit('openBuzzers'); }
-    }
-    utter.onend = openOnce;
-    // Fallback: some browsers never fire onend on repeated utterances
+
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.9;
+    utter.pitch = 1;
+    utter.onend = done;
     const fallbackMs = Math.ceil(text.length / 12) * 1000 + 2500;
-    setTimeout(openOnce, fallbackMs);
+    setTimeout(done, fallbackMs);
+    window.speechSynthesis.speak(utter);
+  } else {
+    // No speech available — open buzzing after a short estimated delay
+    setTimeout(done, Math.ceil(text.length / 12) * 1000 + 1000);
   }
-  window.speechSynthesis.speak(utter);
+}
+
+// ── Sound effects (WebAudio, no assets needed) ───────────────
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+function playBuzz(startTime, duration = 0.18, freq = 160) {
+  const ctx = getAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(0.3, startTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(startTime);
+  osc.stop(startTime + duration);
+}
+function playWrongSound() {
+  // Three short descending buzzes — "nobody got it"
+  const ctx = getAudioCtx();
+  const t = ctx.currentTime;
+  playBuzz(t,        0.18, 180);
+  playBuzz(t + 0.28, 0.18, 150);
+  playBuzz(t + 0.56, 0.30, 110);
 }
 
 // ── Connection ──────────────────────────────────────────────
+function unlockAudio() {
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+  } catch (e) { /* ignore */ }
+}
+
 function joinAsPlayer() {
   const name = document.getElementById('playerName').value.trim();
   if (!name) return alert('Enter your name first');
+  unlockAudio();
   isHost = false;
   socket.emit('join', { name, isHost: false });
 }
 
 function joinAsHost() {
   const name = document.getElementById('playerName').value.trim() || 'Host';
+  unlockAudio();
   isHost = true;
   socket.emit('join', { name, isHost: true });
 }
@@ -144,19 +208,70 @@ socket.on('state', (s) => {
   if (myId) render();
 });
 
-socket.on('buzzersOpen', () => {
-  hasBuzzed = false;
-  const btn = document.getElementById('buzzBtn');
-  if (btn) {
-    btn.classList.remove('hidden');
-    btn.disabled = false;
-    btn.textContent = 'BUZZ IN';
+// Result of my own buzz attempt
+socket.on('buzzResult', ({ status, unlockAt }) => {
+  if (status === 'accepted') {
+    buzzState = 'buzzed';
+  } else if (status === 'early') {
+    buzzState = 'early';   // locked until 250ms after reading; re-enabled by 'readingDone'
+  } else if (status === 'locked') {
+    buzzState = 'locked';
+    scheduleUnlock(unlockAt);
   }
+  updateBuzzButton();
+});
+
+// Reading finished — unlock penalized players 250ms later
+socket.on('readingDone', ({ unlockAt, lockedIds }) => {
+  if (buzzState === 'early' && lockedIds.includes(myId)) {
+    buzzState = 'locked';
+    scheduleUnlock(unlockAt);
+  }
+  updateBuzzButton();
+});
+
+// Nobody buzzed within 3s of reading finishing
+socket.on('questionTimeout', () => {
+  playWrongSound();
 });
 
 socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
+
+let unlockTimer = null;
+function scheduleUnlock(unlockAt) {
+  if (unlockTimer) clearTimeout(unlockTimer);
+  const delay = Math.max(0, unlockAt - Date.now());
+  unlockTimer = setTimeout(() => {
+    if (buzzState === 'locked') {
+      buzzState = 'ready';
+      updateBuzzButton();
+    }
+  }, delay);
+}
+
+function updateBuzzButton() {
+  const btn = document.getElementById('buzzBtn');
+  if (!btn) return;
+  // Hidden unless there's an active question with buzzing open
+  if (!state || !state.currentQuestion || !state.buzzOpen) {
+    btn.classList.add('hidden');
+    return;
+  }
+  // If I'm already locked in as a buzzer, show buzzed state
+  const iAmBuzzer = state.buzzers && state.buzzers.find(b => b.id === myId);
+  btn.classList.remove('hidden');
+  if (iAmBuzzer || buzzState === 'buzzed') {
+    btn.disabled = true; btn.textContent = 'BUZZED!';
+  } else if (buzzState === 'early') {
+    btn.disabled = true; btn.textContent = 'TOO EARLY!';
+  } else if (buzzState === 'locked') {
+    btn.disabled = true; btn.textContent = 'WAIT…';
+  } else {
+    btn.disabled = false; btn.textContent = 'BUZZ IN';
+  }
+}
 
 // ── Render ───────────────────────────────────────────────────
 let categoriesPreloaded = false;
@@ -330,16 +445,29 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // Auto-read clue aloud on host when question first appears
+  // New question? reset my buzz state and (host) start reading aloud
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
-  if (isHost && questionKey !== lastSpokenQuestion) {
-    lastSpokenQuestion = questionKey;
-    speakClue(q.clue);
+  if (questionKey !== activeQuestionKey) {
+    activeQuestionKey = questionKey;
+    buzzState = 'ready';
+    if (isHost) speakClue(q.clue);
   }
 
-  // Answer (host can always see it)
+  const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
+
+  // Reading status indicator (hidden once someone has buzzed)
+  const readingStatus = document.getElementById('readingStatus');
+  if (!hasTopBuzzer) {
+    readingStatus.classList.remove('hidden');
+    readingStatus.textContent = state.readingDone ? '🔔 BUZZ NOW!' : '🔊 Reading…';
+  } else {
+    readingStatus.classList.add('hidden');
+  }
+
+  // Answer is hidden from EVERYONE (host included) until it's time to judge —
+  // i.e. once a buzzer is locked in and the host must rule correct/incorrect.
   const answerEl = document.getElementById('modalAnswer');
-  if (isHost) {
+  if (isHost && hasTopBuzzer) {
     answerEl.textContent = q.answer;
     answerEl.classList.remove('hidden');
   } else {
@@ -387,39 +515,32 @@ function renderQuestionModal() {
     buzzersEl.innerHTML = '';
   }
 
-  // Host controls
+  // Judging controls (host only, once a buzzer is locked in)
   const hqc = document.getElementById('hostQuestionControls');
-  const pbs = document.getElementById('playerBuzzSection');
+  const awardContainer = document.getElementById('playerAwardButtons');
   const buzzBtn = document.getElementById('buzzBtn');
+  const topBuzzer = state.buzzers && state.buzzers[0];
 
-  if (isHost) {
+  if (isHost && topBuzzer) {
     hqc.classList.remove('hidden');
-    pbs.classList.add('hidden');
-
-    // Award buttons for top buzzer
-    const awardContainer = document.getElementById('playerAwardButtons');
-    const topBuzzer = state.buzzers && state.buzzers[0];
-    if (topBuzzer) {
-      const player = state.players[topBuzzer.id];
-      const value = (q.isDailyDouble && state.dailyDoubleWager !== null)
-        ? state.dailyDoubleWager : q.dollarValue;
-      awardContainer.innerHTML = `
-        <strong style="width:100%;text-align:center">Judging: ${escHtml(player ? player.name : topBuzzer.name)}</strong>
-        <button class="award-btn award-correct" onclick="awardPoints('${topBuzzer.id}', true)">✓ Correct (+$${value})</button>
-        <button class="award-btn award-wrong" onclick="awardPoints('${topBuzzer.id}', false)">✗ Wrong (-$${value})</button>
-      `;
-    } else {
-      awardContainer.innerHTML = '';
-    }
+    const player = state.players[topBuzzer.id];
+    const value = (q.isDailyDouble && state.dailyDoubleWager !== null)
+      ? state.dailyDoubleWager : q.dollarValue;
+    awardContainer.innerHTML = `
+      <strong style="width:100%;text-align:center">Judging: ${escHtml(player ? player.name : topBuzzer.name)}</strong>
+      <button class="award-btn award-correct" onclick="awardPoints('${topBuzzer.id}', true)">✓ Correct (+$${value})</button>
+      <button class="award-btn award-wrong" onclick="awardPoints('${topBuzzer.id}', false)">✗ Wrong (-$${value})</button>
+    `;
   } else {
     hqc.classList.add('hidden');
-    pbs.classList.remove('hidden');
-    if (state.buzzOpen && !hasBuzzed) {
-      buzzBtn.classList.remove('hidden');
-      buzzBtn.disabled = false;
-    } else if (!state.buzzOpen) {
-      buzzBtn.classList.add('hidden');
-    }
+    awardContainer.innerHTML = '';
+  }
+
+  // Everyone (host included) can buzz until someone is locked in
+  if (topBuzzer) {
+    buzzBtn.classList.add('hidden');
+  } else {
+    updateBuzzButton();
   }
 }
 
@@ -447,18 +568,6 @@ function selectSquare(round, category, valueIndex) {
   socket.emit('selectSquare', { round, category, valueIndex });
 }
 
-function openBuzzers() {
-  socket.emit('openBuzzers');
-}
-
-function closeBuzzers() {
-  socket.emit('closeBuzzers');
-}
-
-function skipQuestion() {
-  socket.emit('skipQuestion');
-}
-
 function awardPoints(playerId, correct) {
   socket.emit('awardPoints', { playerId, correct });
 }
@@ -483,11 +592,10 @@ function submitWager(max) {
 
 // ── Player Actions ────────────────────────────────────────────
 function buzz() {
-  if (hasBuzzed) return;
-  hasBuzzed = true;
+  if (buzzState !== 'ready') return;
+  if (!state || !state.currentQuestion || !state.buzzOpen) return;
   const btn = document.getElementById('buzzBtn');
-  btn.disabled = true;
-  btn.textContent = 'BUZZED!';
+  if (btn) btn.disabled = true; // prevent double-tap; server result sets final state
   socket.emit('buzz', { clientTimestamp: Date.now() });
 }
 
