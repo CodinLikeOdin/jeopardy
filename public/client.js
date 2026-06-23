@@ -129,10 +129,19 @@ function serverNow() { return Date.now() + clockOffset; }
 })();
 
 // ── Synced clue audio (plays on EVERY device at ~the same instant) ──
-// Uses an HTML <audio> element (reliable across browsers, incl. iOS Safari)
-// rather than Web Audio decodeAudioData, which silently fails on some devices.
-// The buzz race is kept fair by the server's buzzArmTime, independent of audio.
+// Mobile browsers (iOS Safari especially) only allow audio.play() on an
+// element that was first played inside a user gesture. We keep ONE persistent
+// <audio> element, "unlock" it on the Join tap, then just swap its src per
+// clue — so scheduled playback from a timer is permitted. The buzz race stays
+// fair via the server's buzzArmTime, independent of audio.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 let clueAudioEl = null;
+let clueAudioUrl = null;
+function getClueAudioEl() {
+  if (!clueAudioEl) clueAudioEl = new Audio();
+  return clueAudioEl;
+}
+
 async function scheduleClueAudio() {
   if (!state || !state.currentQuestion || state.audioStartTime == null) return;
   const q = state.currentQuestion;
@@ -143,13 +152,14 @@ async function scheduleClueAudio() {
     const res = await fetch('/api/tts/current');
     if (!res.ok) return;                // no audio (e.g. no API key) — visual cue still syncs
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    if (clueAudioEl) { try { clueAudioEl.pause(); } catch (e) {} }
-    const audio = new Audio(url);
-    audio.onended = () => URL.revokeObjectURL(url);
-    clueAudioEl = audio;
+    if (clueAudioUrl) { URL.revokeObjectURL(clueAudioUrl); }
+    clueAudioUrl = URL.createObjectURL(blob);
+    const el = getClueAudioEl();
+    el.muted = false;
+    el.src = clueAudioUrl;
+    el.load();
     let started = false;
-    const go = () => { if (started) return; started = true; audio.play().catch(() => {}); };
+    const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
     const delayMs = state.audioStartTime - serverNow();
     if (delayMs > 30) setTimeout(go, delayMs); else go();
   } catch (e) {
@@ -189,9 +199,25 @@ function playWrongSound() {
 
 // ── Connection ──────────────────────────────────────────────
 function unlockAudio() {
+  // Unlock Web Audio (used for the buzzer)
   try {
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
+  } catch (e) { /* ignore */ }
+  // Unlock the persistent HTML <audio> element (used for clue playback) by
+  // playing a silent clip within this user gesture. After this, scheduled
+  // play() calls are allowed even on iOS.
+  try {
+    const el = getClueAudioEl();
+    el.muted = true;
+    el.src = SILENT_WAV;
+    const p = el.play();
+    if (p && p.then) {
+      p.then(() => { el.pause(); el.currentTime = 0; el.muted = false; })
+       .catch(() => { el.muted = false; });
+    } else {
+      el.pause(); el.muted = false;
+    }
   } catch (e) { /* ignore */ }
 }
 
