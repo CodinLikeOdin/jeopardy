@@ -128,8 +128,11 @@ function serverNow() { return Date.now() + clockOffset; }
   setInterval(() => { samples.length = 0; ping(); }, 25000);
 })();
 
-// ── Synced clue audio (plays on EVERY device at the same instant) ──
-let currentSource = null;
+// ── Synced clue audio (plays on EVERY device at ~the same instant) ──
+// Uses an HTML <audio> element (reliable across browsers, incl. iOS Safari)
+// rather than Web Audio decodeAudioData, which silently fails on some devices.
+// The buzz race is kept fair by the server's buzzArmTime, independent of audio.
+let clueAudioEl = null;
 async function scheduleClueAudio() {
   if (!state || !state.currentQuestion || state.audioStartTime == null) return;
   const q = state.currentQuestion;
@@ -139,20 +142,18 @@ async function scheduleClueAudio() {
   try {
     const res = await fetch('/api/tts/current');
     if (!res.ok) return;                // no audio (e.g. no API key) — visual cue still syncs
-    const arrBuf = await res.arrayBuffer();
-    const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-    const audioBuf = await ctx.decodeAudioData(arrBuf);
-    if (currentSource) { try { currentSource.stop(); } catch (e) {} }
-    const src = ctx.createBufferSource();
-    src.buffer = audioBuf;
-    src.connect(ctx.destination);
-    currentSource = src;
-    // Convert the server-clock start time to this device's audio clock
-    const delaySec = Math.max(0, (state.audioStartTime - serverNow()) / 1000);
-    src.start(ctx.currentTime + delaySec);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (clueAudioEl) { try { clueAudioEl.pause(); } catch (e) {} }
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    clueAudioEl = audio;
+    let started = false;
+    const go = () => { if (started) return; started = true; audio.play().catch(() => {}); };
+    const delayMs = state.audioStartTime - serverNow();
+    if (delayMs > 30) setTimeout(go, delayMs); else go();
   } catch (e) {
-    /* decoding/playback failed — game still works from the on-screen text */
+    /* fetch/playback failed — game still works from the on-screen text + visual cue */
   }
 }
 
@@ -177,12 +178,13 @@ function playBuzz(startTime, duration = 0.18, freq = 160) {
   osc.stop(startTime + duration);
 }
 function playWrongSound() {
-  // Three short descending buzzes — "nobody got it"
+  // Three short, quick buzzes at the same tone — "nobody got it"
   const ctx = getAudioCtx();
   const t = ctx.currentTime;
-  playBuzz(t,        0.18, 180);
-  playBuzz(t + 0.28, 0.18, 150);
-  playBuzz(t + 0.56, 0.30, 110);
+  const FREQ = 200;
+  playBuzz(t,        0.12, FREQ);
+  playBuzz(t + 0.18, 0.12, FREQ);
+  playBuzz(t + 0.36, 0.12, FREQ);
 }
 
 // ── Connection ──────────────────────────────────────────────
