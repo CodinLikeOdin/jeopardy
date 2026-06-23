@@ -16,15 +16,17 @@ app.get('/api/categories', (req, res) => {
   res.sendFile(path.join(__dirname, 'categories.json'));
 });
 
+let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
+
 // Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
 async function generateTTS(text) {
-  if (!process.env.ELEVENLABS_API_KEY) return null;
+  if (!process.env.ELEVENLABS_API_KEY) { lastTtsError = 'ELEVENLABS_API_KEY not set on server'; return null; }
   try {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
       method: 'POST',
       headers: {
-        'xi-api-key': process.env.ELEVENLABS_API_KEY,
+        'xi-api-key': process.env.ELEVENLABS_API_KEY.trim(),
         'Content-Type': 'application/json',
         'Accept': 'audio/mpeg',
       },
@@ -35,15 +37,40 @@ async function generateTTS(text) {
       }),
     });
     if (!response.ok) {
-      console.error('ElevenLabs error:', await response.text());
+      const body = await response.text();
+      lastTtsError = `HTTP ${response.status}: ${body.slice(0, 300)}`;
+      console.error('ElevenLabs error:', lastTtsError);
       return null;
     }
+    lastTtsError = 'ok';
     return Buffer.from(await response.arrayBuffer());
   } catch (err) {
-    console.error('TTS error:', err);
+    lastTtsError = 'fetch threw: ' + (err && err.message ? err.message : String(err));
+    console.error('TTS error:', lastTtsError);
     return null;
   }
 }
+
+// Diagnostic: visit this URL to see why audio may be failing on the server.
+app.get('/api/tts/diag', async (req, res) => {
+  const key = process.env.ELEVENLABS_API_KEY || '';
+  const result = {
+    keyPresent: !!key,
+    keyLength: key.length,
+    keyPrefix: key ? key.slice(0, 4) + '…' : null,
+    hasWhitespace: key !== key.trim(),
+    voiceId: process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG (default Arnold)',
+    lastTtsError,
+    hasCachedAudio: !!currentAudio,
+  };
+  // Live test call so the diag reflects the real current state
+  if (req.query.test === '1') {
+    const buf = await generateTTS('Diagnostic test.');
+    result.testBytes = buf ? buf.length : 0;
+    result.lastTtsError = lastTtsError;
+  }
+  res.json(result);
+});
 
 // The current question's audio, cached so every device fetches the same bytes
 // with a single ElevenLabs call. Keyed by an id that changes per question.
