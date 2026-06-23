@@ -19,12 +19,17 @@ app.get('/api/categories', (req, res) => {
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
 
 // Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
+// Hard-capped with an AbortController so a slow/hung request can NEVER freeze
+// the game — on timeout we just proceed with the on-screen text + visual cue.
 async function generateTTS(text) {
   if (!process.env.ELEVENLABS_API_KEY) { lastTtsError = 'ELEVENLABS_API_KEY not set on server'; return null; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
   try {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'xi-api-key': process.env.ELEVENLABS_API_KEY.trim(),
         'Content-Type': 'application/json',
@@ -45,9 +50,11 @@ async function generateTTS(text) {
     lastTtsError = 'ok';
     return Buffer.from(await response.arrayBuffer());
   } catch (err) {
-    lastTtsError = 'fetch threw: ' + (err && err.message ? err.message : String(err));
+    lastTtsError = (err && err.name === 'AbortError' ? 'timed out after 12s' : 'fetch threw: ' + (err && err.message ? err.message : String(err)));
     console.error('TTS error:', lastTtsError);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
