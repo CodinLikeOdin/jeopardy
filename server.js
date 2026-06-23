@@ -51,27 +51,6 @@ async function generateTTS(text) {
   }
 }
 
-// Diagnostic: visit this URL to see why audio may be failing on the server.
-app.get('/api/tts/diag', async (req, res) => {
-  const key = process.env.ELEVENLABS_API_KEY || '';
-  const result = {
-    keyPresent: !!key,
-    keyLength: key.length,
-    keyPrefix: key ? key.slice(0, 4) + '…' : null,
-    hasWhitespace: key !== key.trim(),
-    voiceId: process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG (default Arnold)',
-    lastTtsError,
-    hasCachedAudio: !!currentAudio,
-  };
-  // Live test call so the diag reflects the real current state
-  if (req.query.test === '1') {
-    const buf = await generateTTS('Diagnostic test.');
-    result.testBytes = buf ? buf.length : 0;
-    result.lastTtsError = lastTtsError;
-  }
-  res.json(result);
-});
-
 // The current question's audio, cached so every device fetches the same bytes
 // with a single ElevenLabs call. Keyed by an id that changes per question.
 let currentAudio = null; // { id, buffer }
