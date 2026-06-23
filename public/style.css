@@ -390,6 +390,23 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 #wagerSection { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
 #wagerSection input { color: #000; max-width: 120px; }
 
+/* Audio status / tap-to-play indicator */
+#audioStatus {
+  font-size: 0.9rem;
+  font-weight: bold;
+  padding: 6px 14px;
+  border-radius: 16px;
+  background: rgba(0,0,0,0.35);
+  color: #ddd;
+}
+#audioStatus.tappable {
+  background: #F5A623;
+  color: #000;
+  cursor: pointer;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+
 /* Reading status indicator */
 #readingStatus {
   font-size: 1.1rem;

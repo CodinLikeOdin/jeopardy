@@ -142,16 +142,38 @@ function getClueAudioEl() {
   return clueAudioEl;
 }
 
+// Small on-screen diagnostic so we can see which half (fetch vs playback) fails.
+function setAudioStatus(text, tappable) {
+  const el = document.getElementById('audioStatus');
+  if (!el) return;
+  if (!text) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.textContent = text;
+  el.classList.toggle('tappable', !!tappable);
+}
+
+// Tap-to-play fallback if the browser blocked autoplay.
+function retryClueAudio() {
+  const el = getClueAudioEl();
+  el.muted = false;
+  el.play().then(() => setAudioStatus('🔊 audio playing')).catch(() => {});
+}
+
 async function scheduleClueAudio() {
   if (!state || !state.currentQuestion || state.audioStartTime == null) return;
   const q = state.currentQuestion;
   const key = `${q.round}|${q.category}|${q.valueIndex}`;
   if (key === activeAudioKey) return;   // already scheduled for this question
   activeAudioKey = key;
+  setAudioStatus('♪ loading clue audio…');
   try {
     const res = await fetch('/api/tts/current');
-    if (!res.ok) return;                // no audio (e.g. no API key) — visual cue still syncs
+    if (!res.ok) {                      // no audio (e.g. no API key on server)
+      setAudioStatus(`🔇 no audio from server (${res.status})`);
+      return;
+    }
     const blob = await res.blob();
+    if (!blob || blob.size === 0) { setAudioStatus('🔇 empty audio from server'); return; }
     if (clueAudioUrl) { URL.revokeObjectURL(clueAudioUrl); }
     clueAudioUrl = URL.createObjectURL(blob);
     const el = getClueAudioEl();
@@ -159,11 +181,17 @@ async function scheduleClueAudio() {
     el.src = clueAudioUrl;
     el.load();
     let started = false;
-    const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
+    const go = () => {
+      if (started) return;
+      started = true;
+      el.play()
+        .then(() => setAudioStatus(''))                       // playing — hide indicator
+        .catch(() => setAudioStatus('🔊 Tap here to hear the clue', true));
+    };
     const delayMs = state.audioStartTime - serverNow();
     if (delayMs > 30) setTimeout(go, delayMs); else go();
   } catch (e) {
-    /* fetch/playback failed — game still works from the on-screen text + visual cue */
+    setAudioStatus('🔇 audio error: ' + (e && e.message ? e.message : 'unknown'));
   }
 }
 
