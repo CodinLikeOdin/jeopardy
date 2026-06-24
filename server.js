@@ -363,23 +363,31 @@ async function runWithConcurrency(items, limit, fn) {
   await Promise.all(workers);
 }
 
+// Normalize text for comparison: lowercase, drop ALL punctuation, collapse
+// whitespace. So "Sgt. Pepper's" and "sgt peppers" compare equal.
+function normalizeText(s) {
+  return String(s).toLowerCase()
+    .replace(/['’`]/g, '')           // drop apostrophes so "pepper's" === "peppers"
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Strip a Jeopardy answer down to its core ("What is the Eiffel Tower?" -> "eiffel tower").
 function answerCore(answer) {
-  return String(answer)
+  const stripped = String(answer)
     .replace(/^\s*(what|who|where|when|why|how)\s+(is|are|was|were)\s+/i, '')
-    .replace(/^\s*(the|a|an)\s+/i, '')
-    .replace(/[?.!,'"]/g, '')
-    .trim()
-    .toLowerCase();
+    .replace(/^\s*(the|a|an)\s+/i, '');
+  return normalizeText(stripped);
 }
 
 // A clue "leaks" if its own answer (or the category name) appears in the clue,
-// e.g. category "Harry Potter" with answer "Harry Potter". Multi-word leaks are
-// strong signals; we ignore very short cores to avoid false positives.
+// e.g. category "Harry Potter" with answer "Harry Potter". Compared on the
+// normalized (punctuation-free) text; very short cores are ignored.
 function clueLeaks(clue, answer, category) {
   const core = answerCore(answer);
   if (core.length < 4) return false;
-  const hay = (clue + ' ' + category).toLowerCase();
+  const hay = normalizeText(clue) + ' ' + normalizeText(category);
   return hay.includes(core);
 }
 
@@ -403,8 +411,8 @@ Rules:
 - the answer (and the category name) must never appear in the clue text
 - concise and unambiguous`;
 
-  let lastErr, lastClues;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastErr, best = null, bestLeaks = Infinity;
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const resp = await client.messages.create(
         { model: 'claude-sonnet-4-6', max_tokens: 900, messages: [{ role: 'user', content: prompt }] },
@@ -412,17 +420,18 @@ Rules:
       );
       const clues = JSON.parse(extractJSON(resp.content[0].text.trim())).clues;
       if (!Array.isArray(clues) || clues.length < 5) throw new Error('unexpected clue shape');
-      lastClues = clues.slice(0, 5);
-      const leaks = lastClues.filter(c => clueLeaks(c.clue, c.answer, category));
-      if (leaks.length === 0) return lastClues;
-      throw new Error(`answer leaked into ${leaks.length} clue(s)`);
+      const five = clues.slice(0, 5);
+      const leaks = five.filter(c => clueLeaks(c.clue, c.answer, category)).length;
+      if (leaks < bestLeaks) { best = five; bestLeaks = leaks; }   // keep the cleanest so far
+      if (leaks === 0) return five;
+      throw new Error(`answer leaked into ${leaks} clue(s)`);
     } catch (err) {
       lastErr = err;
       console.error(`generate "${category}" attempt ${attempt + 1} failed:`, err.message);
     }
   }
-  // Out of retries: prefer returning something playable over failing the category.
-  if (lastClues) return lastClues;
+  // Out of retries: return the cleanest attempt we got, else fail the category.
+  if (best) return best;
   throw lastErr;
 }
 
