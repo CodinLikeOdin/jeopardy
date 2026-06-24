@@ -515,6 +515,12 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   transition: background 0.15s;
 }
 .btn-reroll:hover { background: #1a1a4e; border-color: #F5A623; }
+.btn-reroll.btn-add { color: #2ecc71; }
+.btn-reroll.btn-add:hover { border-color: #2ecc71; }
+.btn-reroll.btn-del { color: #e74c3c; }
+.btn-reroll.btn-del:hover { border-color: #e74c3c; }
+/* tighter buttons so the row fits 3 controls on phones */
+.cat-row .btn-reroll { width: 32px; height: 32px; font-size: 1rem; }
 
 /* Setup columns */
 .setup-columns {

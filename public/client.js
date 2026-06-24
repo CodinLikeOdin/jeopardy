@@ -357,7 +357,7 @@ function pickRandom(exclude = []) {
 }
 
 function rerollOne(btn) {
-  const input = btn.previousElementSibling;
+  const input = btn.closest('.cat-row').querySelector('.cat-input');
   const used = getUsedCategories().filter(c => c !== input.value.trim().toLowerCase());
   const pick = pickRandom(used);
   if (pick) input.value = pick;
@@ -373,40 +373,42 @@ function rerollAll() {
   });
 }
 
-// Add a topic to the saved random-selection pool for future games.
-async function addTopic() {
-  const t = (prompt('Add a topic to the random pool:') || '').trim();
-  if (!t) return;
+function rowInput(btn) {
+  return btn.closest('.cat-row').querySelector('.cat-input');
+}
+
+async function poolAction(action, topic) {
+  const res = await fetch('/api/categories/pool', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, topic }),
+  });
+  if (!res.ok) throw new Error();
+  categoryPool = (await res.json()).pool;
+}
+
+// Save the topic typed in THIS row to the persistent random-selection pool.
+async function addTopicFromRow(btn) {
+  const t = (rowInput(btn).value || '').trim();
+  if (!t) return alert('Type a topic in this field first.');
   try {
-    const res = await fetch('/api/categories/pool', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'add', topic: t }),
-    });
-    if (!res.ok) throw new Error();
-    categoryPool = (await res.json()).pool;
-    alert(`Added "${t}". The pool now has ${categoryPool.length} topics.`);
+    await poolAction('add', t);
+    alert(`Saved "${t}" to the pool (${categoryPool.length} topics).`);
   } catch (e) {
-    alert('Could not add the topic.');
+    alert('Could not save the topic.');
   }
 }
 
-// Remove a topic from the saved random-selection pool.
-async function deleteTopic() {
-  const list = categoryPool.slice().sort().join(', ');
-  const t = (prompt('Delete which topic from the pool? Type the exact name:\n\n' + list) || '').trim();
-  if (!t) return;
+// Remove the topic in THIS row from the persistent random-selection pool.
+async function deleteTopicFromRow(btn) {
+  const t = (rowInput(btn).value || '').trim();
+  if (!t) return alert('This field is empty — nothing to remove.');
+  if (!confirm(`Remove "${t}" from the saved pool?`)) return;
   try {
-    const res = await fetch('/api/categories/pool', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'remove', topic: t }),
-    });
-    if (!res.ok) throw new Error();
-    categoryPool = (await res.json()).pool;
-    alert(`Removed "${t}". The pool now has ${categoryPool.length} topics.`);
+    await poolAction('remove', t);
+    alert(`Removed "${t}" from the pool (${categoryPool.length} topics).`);
   } catch (e) {
-    alert('Could not delete the topic.');
+    alert('Could not remove the topic.');
   }
 }
 
