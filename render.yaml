@@ -12,3 +12,7 @@ services:
         sync: false
       - key: ELEVENLABS_VOICE_ID
         sync: false
+      - key: GIST_TOKEN
+        sync: false
+      - key: GIST_ID
+        sync: false
