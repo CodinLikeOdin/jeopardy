@@ -15,40 +15,93 @@ app.use(express.json());
 
 const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
 
-app.get('/api/categories', (req, res) => {
-  res.sendFile(CATEGORIES_PATH);
+// ── Persistent topic pool ────────────────────────────────────
+// The default single/double categories live in categories.json (in the repo).
+// The mutable random-selection POOL is stored in a GitHub Gist when configured
+// (GIST_TOKEN + GIST_ID), so topics added by the host survive restarts and
+// redeploys on Render's ephemeral filesystem. Without those env vars it falls
+// back to reading/writing categories.json locally.
+const GIST_TOKEN = process.env.GIST_TOKEN;
+const GIST_ID = process.env.GIST_ID;
+const GIST_FILENAME = 'jeopardy-pool.json';
+const useGist = !!(GIST_TOKEN && GIST_ID);
+
+function localPool() {
+  try { return JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8')).pool || []; }
+  catch (e) { return []; }
+}
+
+async function readPool() {
+  if (useGist) {
+    try {
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json' },
+      });
+      if (r.ok) {
+        const g = await r.json();
+        const f = g.files && g.files[GIST_FILENAME];
+        if (f && f.content) return JSON.parse(f.content);
+      } else {
+        console.error('Gist read failed:', r.status);
+      }
+    } catch (e) {
+      console.error('Gist read error:', e.message);
+    }
+  }
+  return localPool();
+}
+
+async function writePool(pool) {
+  if (useGist) {
+    const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${GIST_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ files: { [GIST_FILENAME]: { content: JSON.stringify(pool, null, 2) } } }),
+    });
+    if (!r.ok) throw new Error('gist write failed: ' + r.status);
+    return;
+  }
+  // Local fallback
+  let data = {};
+  try { data = JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8')); } catch (e) {}
+  data.pool = pool;
+  fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(data, null, 2) + '\n');
+}
+
+app.get('/api/categories', async (req, res) => {
+  let data = { single: [], double: [], pool: [] };
+  try { data = JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8')); } catch (e) {}
+  data.pool = await readPool();
+  res.json(data);
 });
 
-// Add or remove a topic from the random-selection pool in categories.json.
+// Add or remove a topic from the persistent random-selection pool.
 // body: { action: 'add' | 'remove', topic: '...' }
-app.post('/api/categories/pool', (req, res) => {
+app.post('/api/categories/pool', async (req, res) => {
   const { action, topic } = req.body || {};
   const t = (topic || '').trim();
   if (!t) return res.status(400).json({ error: 'no topic' });
 
-  let data;
-  try {
-    data = JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8'));
-  } catch (e) {
-    return res.status(500).json({ error: 'could not read categories file' });
-  }
-  data.pool = data.pool || [];
-
+  let pool = await readPool();
   if (action === 'add') {
-    if (!data.pool.some(c => c.toLowerCase() === t.toLowerCase())) data.pool.push(t);
-    data.pool.sort((a, b) => a.localeCompare(b));
+    if (!pool.some(c => c.toLowerCase() === t.toLowerCase())) pool.push(t);
+    pool.sort((a, b) => a.localeCompare(b));
   } else if (action === 'remove') {
-    data.pool = data.pool.filter(c => c.toLowerCase() !== t.toLowerCase());
+    pool = pool.filter(c => c.toLowerCase() !== t.toLowerCase());
   } else {
     return res.status(400).json({ error: 'bad action' });
   }
 
   try {
-    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(data, null, 2) + '\n');
+    await writePool(pool);
   } catch (e) {
-    return res.status(500).json({ error: 'could not save categories file' });
+    return res.status(500).json({ error: 'could not save: ' + e.message });
   }
-  res.json({ pool: data.pool });
+  res.json({ pool });
 });
 
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
