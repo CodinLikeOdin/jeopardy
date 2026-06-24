@@ -704,7 +704,13 @@ function submitCategories() {
   const double = Array.from(document.querySelectorAll('.double-cat')).map(i => i.value.trim()).filter(Boolean);
   if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category');
   if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category');
-  socket.emit('setCategories', { singleCategories: single, doubleCategories: double });
+  const enforceEarlyPenalty = document.getElementById('enforcePenalty').checked;
+  const buzzTimeoutMs = (parseInt(document.getElementById('buzzSeconds').value, 10) || 8) * 1000;
+  socket.emit('setCategories', {
+    singleCategories: single,
+    doubleCategories: double,
+    settings: { enforceEarlyPenalty, buzzTimeoutMs },
+  });
 }
 
 function selectSquare(round, category, valueIndex) {

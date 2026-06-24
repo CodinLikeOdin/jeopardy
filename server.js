@@ -171,11 +171,16 @@ app.post('/api/tts', async (req, res) => {
 const client = new Anthropic();
 
 const LEAD_IN_MS = 2500;       // time for clients to fetch+decode audio before it starts
-const FIRST_TIMEOUT_MS = 8000; // first buzz window after the clue finishes
+const DEFAULT_BUZZ_MS = 8000;  // default first buzz window after the clue finishes
 const RETRY_TIMEOUT_MS = 3000; // buzz window after a wrong answer
 const REARM_MS = 1000;         // synced "get ready" before buzzers re-arm on retry
 const SETTLE_MS = 250;         // collect near-simultaneous buzzes, then pick earliest
 const LOCKOUT_MS = 250;        // early/mash penalty
+const DD_TIMEOUT_MS = 20000;   // daily double answer window
+
+function defaultSettings() {
+  return { enforceEarlyPenalty: true, buzzTimeoutMs: DEFAULT_BUZZ_MS };
+}
 
 let gameState = {
   phase: 'lobby',
@@ -191,6 +196,7 @@ let gameState = {
   dailyDoubleWager: null,
   hostId: null,
   boardControl: null,
+  settings: defaultSettings(),
   usedSquares: { single: {}, double: {} },
 };
 
@@ -218,6 +224,18 @@ function scheduleNoBuzzTimeout(windowMs) {
       revealAnswerThenClear();
     }
   }, fireIn);
+}
+
+// Daily double answer window: if the host hasn't judged by `deadline`, reveal
+// the answer (no score change — the host scores the wager when they judge).
+function scheduleDailyDoubleTimeout(deadline) {
+  if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
+  questionTimeoutHandle = setTimeout(() => {
+    questionTimeoutHandle = null;
+    if (gameState.currentQuestion && gameState.currentQuestion.isDailyDouble && !gameState.currentQuestion.revealed) {
+      revealAnswerThenClear();
+    }
+  }, Math.max(0, deadline - Date.now()));
 }
 
 // A valid buzz arrived: after a short settle, the earliest synced timestamp wins.
@@ -278,6 +296,7 @@ function resetGame() {
     dailyDoubleWager: null,
     hostId: null,
     boardControl: null,
+    settings: defaultSettings(),
     usedSquares: { single: {}, double: {} },
   };
 }
@@ -318,8 +337,28 @@ async function runWithConcurrency(items, limit, fn) {
   await Promise.all(workers);
 }
 
+// Strip a Jeopardy answer down to its core ("What is the Eiffel Tower?" -> "eiffel tower").
+function answerCore(answer) {
+  return String(answer)
+    .replace(/^\s*(what|who|where|when|why|how)\s+(is|are|was|were)\s+/i, '')
+    .replace(/^\s*(the|a|an)\s+/i, '')
+    .replace(/[?.!,'"]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+// A clue "leaks" if its own answer (or the category name) appears in the clue,
+// e.g. category "Harry Potter" with answer "Harry Potter". Multi-word leaks are
+// strong signals; we ignore very short cores to avoid false positives.
+function clueLeaks(clue, answer, category) {
+  const core = answerCore(answer);
+  if (core.length < 4) return false;
+  const hay = (clue + ' ' + category).toLowerCase();
+  return hay.includes(core);
+}
+
 // Generate one category's 5 clues in a SINGLE self-verifying call (was two calls).
-// Retries a couple of times on transient errors / malformed JSON.
+// Retries on transient errors, malformed JSON, or answers that leak into the clue.
 async function generateQuestions(category) {
   const prompt = `You are writing one category for a game of Jeopardy!: "${category}".
 
@@ -327,15 +366,18 @@ Write exactly 5 clues, ordered easiest (index 0) to hardest (index 4). In Jeopar
 
 ACCURACY IS CRITICAL: state only facts you are highly confident are true. Mentally fact-check each clue and fix anything uncertain before answering. Avoid obscure stats, exact dates, or records you might misremember.
 
+NEVER GIVE AWAY THE ANSWER: the answer must NOT appear anywhere in its own clue, and a clue must not simply restate the category. For example, in a "Harry Potter" category, do NOT write "This character from the Harry Potter series..." with the answer "Harry Potter". Describe the subject without naming it.
+
 Return ONLY valid JSON, no other text:
 {"clues":[{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"},{"clue":"...","answer":"What is ...?"}]}
 
 Rules:
 - each clue is a statement/description, NOT a question
 - each answer is phrased "What is X?" or "Who is X?"
+- the answer (and the category name) must never appear in the clue text
 - concise and unambiguous`;
 
-  let lastErr;
+  let lastErr, lastClues;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const resp = await client.messages.create(
@@ -343,13 +385,18 @@ Rules:
         { timeout: 45000, maxRetries: 1 }
       );
       const clues = JSON.parse(extractJSON(resp.content[0].text.trim())).clues;
-      if (Array.isArray(clues) && clues.length >= 5) return clues.slice(0, 5);
-      throw new Error('unexpected clue shape');
+      if (!Array.isArray(clues) || clues.length < 5) throw new Error('unexpected clue shape');
+      lastClues = clues.slice(0, 5);
+      const leaks = lastClues.filter(c => clueLeaks(c.clue, c.answer, category));
+      if (leaks.length === 0) return lastClues;
+      throw new Error(`answer leaked into ${leaks.length} clue(s)`);
     } catch (err) {
       lastErr = err;
       console.error(`generate "${category}" attempt ${attempt + 1} failed:`, err.message);
     }
   }
+  // Out of retries: prefer returning something playable over failing the category.
+  if (lastClues) return lastClues;
   throw lastErr;
 }
 
@@ -371,12 +418,13 @@ io.on('connection', (socket) => {
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
-    socket.on('__test_inject', ({ board, phase }) => {
+    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles }) => {
       gameState.board.single = board;
       gameState.board.double = board;
-      gameState.dailyDoubles = [];
+      gameState.dailyDoubles = dailyDoubles || [];
       gameState.phase = phase || 'single';
       gameState.categories = Object.keys(board);
+      if (settings) gameState.settings = { ...gameState.settings, ...settings };
       broadcastState();
     });
   }
@@ -409,8 +457,15 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('setCategories', async ({ singleCategories, doubleCategories }) => {
+  socket.on('setCategories', async ({ singleCategories, doubleCategories, settings }) => {
     if (socket.id !== gameState.hostId) return;
+    // Apply per-game settings from the setup screen
+    if (settings) {
+      gameState.settings = {
+        enforceEarlyPenalty: settings.enforceEarlyPenalty !== false,
+        buzzTimeoutMs: Math.max(2000, Math.min(60000, Number(settings.buzzTimeoutMs) || DEFAULT_BUZZ_MS)),
+      };
+    }
     gameState.phase = 'generating';
     gameState.categories = singleCategories;
 
@@ -501,10 +556,16 @@ io.on('connection', (socket) => {
       : Math.ceil(clue.clue.length / 12 * 1000) + 1500;
 
     gameState.audioStartTime = Date.now() + LEAD_IN_MS;
+    const clueEnd = gameState.audioStartTime + durationMs;
     if (!isDailyDouble) {
       gameState.buzzOpen = true;
-      gameState.buzzArmTime = gameState.audioStartTime + durationMs;
-      scheduleNoBuzzTimeout(FIRST_TIMEOUT_MS);
+      // With the early-buzz penalty ON, buzzers arm when the clue FINISHES.
+      // With it OFF, they arm when the clue starts appearing (buzz any time, no penalty).
+      gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
+      scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
+    } else {
+      // Daily double: only the controlling contestant answers; give them a fixed window.
+      scheduleDailyDoubleTimeout(clueEnd + DD_TIMEOUT_MS);
     }
     broadcastState();
   });
@@ -521,13 +582,20 @@ io.on('connection', (socket) => {
     if (typeof ts !== 'number') ts = Date.now();
 
     const armTime = gameState.buzzArmTime;
-    const locked = lockUntil[socket.id] && ts < lockUntil[socket.id];
-    // Pressed before buzzers armed, or during a personal lockout → penalize.
-    // Every such press RESETS the lockout, so mashing keeps you frozen.
-    if (armTime == null || ts < armTime || locked) {
-      lockUntil[socket.id] = ts + LOCKOUT_MS;
-      broadcastState();
-      return;
+    const penalty = gameState.settings.enforceEarlyPenalty;
+
+    if (penalty) {
+      const locked = lockUntil[socket.id] && ts < lockUntil[socket.id];
+      // Pressed before buzzers armed, or during a personal lockout → penalize.
+      // Every such press RESETS the lockout, so mashing keeps you frozen.
+      if (armTime == null || ts < armTime || locked) {
+        lockUntil[socket.id] = ts + LOCKOUT_MS;
+        broadcastState();
+        return;
+      }
+    } else {
+      // Penalty disabled: buzzing before the window opens is simply ignored (no lockout).
+      if (armTime == null || ts < armTime) return;
     }
 
     // Valid buzz — collect for a short settle window, then earliest ts wins.
@@ -571,7 +639,15 @@ io.on('connection', (socket) => {
 
   socket.on('dailyDoubleWager', ({ wager }) => {
     if (socket.id !== gameState.hostId) return;
-    gameState.dailyDoubleWager = wager;
+    const q = gameState.currentQuestion;
+    if (!q || !q.isDailyDouble) return;
+    // The controlling contestant may wager up to their current score, or up to
+    // the clue's dollar value if that's higher (even when their score is < $0).
+    const ctrl = gameState.boardControl ? gameState.players[gameState.boardControl] : null;
+    const maxWager = Math.max(ctrl ? ctrl.score : 0, q.dollarValue);
+    let w = Math.round(Number(wager));
+    if (!Number.isFinite(w)) w = q.dollarValue;
+    gameState.dailyDoubleWager = Math.max(5, Math.min(maxWager, w));
     broadcastState();
   });
 

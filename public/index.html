@@ -62,7 +62,18 @@
           <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save this topic to the pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove this topic from the pool">🗑</button></div>
         </div>
       </div>
-      <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;justify-content:center">
+      <div class="settings-row">
+        <label class="setting">
+          <span>Enforce early-buzz penalty</span>
+          <input type="checkbox" id="enforcePenalty" checked>
+          <span class="switch"></span>
+        </label>
+        <label class="setting">
+          <span>Buzz time limit (seconds)</span>
+          <input type="number" id="buzzSeconds" min="2" max="60" value="8" class="num-input">
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;justify-content:center">
         <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>
         <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
       </div>
