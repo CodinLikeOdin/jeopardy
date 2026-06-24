@@ -318,17 +318,24 @@ socket.on('questionTimeout', () => {
   playWrongSound();
 });
 
-// A contestant answered wrong — buzzer on every device + a 1s "Incorrect" flash
-let incorrectTimer = null;
+// Full-screen result flash (green CORRECT / red INCORRECT) shown for 2 seconds.
+let resultTimer = null;
+function showResultOverlay(big, sub, correct) {
+  const ov = document.getElementById('incorrectOverlay');
+  ov.classList.toggle('correct', !!correct);
+  ov.innerHTML = `<div class="io-big">${big}</div><div class="io-sub">${sub}</div>`;
+  ov.classList.remove('hidden');
+  if (resultTimer) clearTimeout(resultTimer);
+  resultTimer = setTimeout(() => ov.classList.add('hidden'), 2000);
+}
+
 socket.on('wrongAnswer', ({ name, lost }) => {
   playWrongSound();
-  const ov = document.getElementById('incorrectOverlay');
-  ov.innerHTML =
-    `<div class="io-big">INCORRECT</div>` +
-    `<div class="io-sub">${escHtml(name || '')} &minus;$${Number(lost || 0).toLocaleString()}</div>`;
-  ov.classList.remove('hidden');
-  if (incorrectTimer) clearTimeout(incorrectTimer);
-  incorrectTimer = setTimeout(() => ov.classList.add('hidden'), 2000);
+  showResultOverlay('INCORRECT', `${escHtml(name || '')} &minus;$${Number(lost || 0).toLocaleString()}`, false);
+});
+
+socket.on('correctAnswer', ({ name, earned }) => {
+  showResultOverlay('CORRECT', `${escHtml(name || '')} +$${Number(earned || 0).toLocaleString()}`, true);
 });
 
 socket.on('error', ({ message }) => {

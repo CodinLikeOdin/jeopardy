@@ -660,6 +660,8 @@ io.on('connection', (socket) => {
 
     if (correct) {
       gameState.boardControl = playerId;
+      const name = gameState.players[playerId] ? gameState.players[playerId].name : '';
+      io.emit('correctAnswer', { name, earned: value });   // green flash on all devices
       revealAnswerThenClear();            // show answer to everyone, then clear
       return;
     }
