@@ -26,6 +26,11 @@
       <div class="logo">JEOPARDY!</div>
       <div class="card">
         <input id="playerName" type="text" placeholder="Your name" maxlength="20">
+        <div id="photoRow">
+          <img id="photoPreview" class="hidden" alt="your photo">
+          <button class="btn btn-secondary" onclick="document.getElementById('photoInput').click()">📷 Add Your Photo</button>
+          <input id="photoInput" type="file" accept="image/*" capture="user" style="display:none" onchange="onPhotoSelected(event)">
+        </div>
         <button class="btn btn-primary" onclick="joinAsPlayer()">Join as Player</button>
         <button class="btn btn-secondary" onclick="joinAsHost()">Join as Host</button>
       </div>
@@ -112,6 +117,7 @@
           <h3>DAILY DOUBLE!</h3>
           <div id="wagerSection"></div>
         </div>
+        <div id="judgingPanel" class="hidden"></div>
         <div id="modalAnswer" class="hidden"></div>
         <div id="buzzers"></div>
         <div id="audioStatus" class="hidden" onclick="retryClueAudio()"></div>

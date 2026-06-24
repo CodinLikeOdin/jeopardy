@@ -157,6 +157,18 @@ app.get('/api/tts/current', (req, res) => {
   res.send(currentAudio.buffer);
 });
 
+// Contestant photos (small JPEG thumbnails) kept in memory, served by player id.
+// Stored separately from game state so frequent state broadcasts stay tiny.
+let photos = {}; // playerId -> Buffer
+
+app.get('/api/photo/:id', (req, res) => {
+  const buf = photos[req.params.id];
+  if (!buf) return res.status(404).end();
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.send(buf);
+});
+
 // Legacy direct TTS (still used as a fallback by the client if needed)
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
@@ -447,6 +459,7 @@ io.on('connection', (socket) => {
       gameState.players[socket.id] = { ...gameState.players[existingId], disconnected: false };
       delete gameState.players[existingId];
       if (gameState.boardControl === existingId) gameState.boardControl = socket.id;
+      if (photos[existingId]) { photos[socket.id] = photos[existingId]; delete photos[existingId]; } // carry photo across reconnect
     } else {
       const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
       const usedColors = Object.values(gameState.players).map(p => p.color);
@@ -505,6 +518,21 @@ io.on('connection', (socket) => {
     gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
     gameState.phase = 'single';
     gameState.genProgress = null;
+    broadcastState();
+  });
+
+  // Contestant uploads a small JPEG selfie (data URL). Stored server-side and
+  // served via /api/photo/:id; state only carries a flag + version.
+  socket.on('setPhoto', ({ dataUrl }) => {
+    const p = gameState.players[socket.id];
+    if (!p || typeof dataUrl !== 'string') return;
+    const m = dataUrl.match(/^data:image\/jpeg;base64,(.+)$/);
+    if (!m) return;
+    const buf = Buffer.from(m[1], 'base64');
+    if (buf.length === 0 || buf.length > 300000) return; // sanity cap ~300KB
+    photos[socket.id] = buf;
+    p.hasPhoto = true;
+    p.photoVersion = (p.photoVersion || 0) + 1;
     broadcastState();
   });
 

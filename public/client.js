@@ -264,8 +264,46 @@ function joinAsHost() {
   socket.emit('join', { name, isHost: true });
 }
 
+let pendingPhoto = null;
+
+// Capture & downscale a selfie to a small center-cropped JPEG before sending.
+function onPhotoSelected(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const size = 160;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const min = Math.min(img.width, img.height);
+      const sx = (img.width - min) / 2, sy = (img.height - min) / 2;
+      ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
+      pendingPhoto = canvas.toDataURL('image/jpeg', 0.6);
+      const prev = document.getElementById('photoPreview');
+      prev.src = pendingPhoto; prev.classList.remove('hidden');
+      // If we've already joined, send it now
+      if (myId) socket.emit('setPhoto', { dataUrl: pendingPhoto });
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// Render a player's avatar — their photo if uploaded, else a colored initial.
+function avatar(id, p, size) {
+  if (p.hasPhoto) {
+    return `<img class="avatar" src="/api/photo/${id}?v=${p.photoVersion || 0}" style="width:${size}px;height:${size}px">`;
+  }
+  const initial = escHtml((p.name && p.name[0] ? p.name[0] : '?').toUpperCase());
+  return `<div class="avatar avatar-initial" style="width:${size}px;height:${size}px;background:${p.color}">${initial}</div>`;
+}
+
 socket.on('joined', ({ id }) => {
   myId = id;
+  if (pendingPhoto) socket.emit('setPhoto', { dataUrl: pendingPhoto });
 });
 
 socket.on('state', (s) => {
@@ -300,10 +338,13 @@ function tickModal() {
   const audioStarted = state.audioStartTime != null && now >= state.audioStartTime;
   const armed = state.buzzArmTime != null && now >= state.buzzArmTime;
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
+  // Judging: someone buzzed and the host hasn't ruled yet → show photos + scores
+  const judging = hasTopBuzzer && !q.revealed && !q.isDailyDouble;
 
-  // Clue text appears when the speech begins (or once the answer is revealed)
+  // Clue text appears when the speech begins (or once revealed), but is hidden
+  // during the judging screen (and reappears on a wrong answer when buzzers reopen)
   const clueEl = document.getElementById('modalClue');
-  if (audioStarted || q.revealed) clueEl.classList.remove('hidden');
+  if ((audioStarted || q.revealed) && !judging) clueEl.classList.remove('hidden');
   else clueEl.classList.add('hidden');
 
   // Only a "BUZZ NOW!" cue (the old "Reading…" message is gone)
@@ -316,6 +357,22 @@ function tickModal() {
   }
 
   updateBuzzButton();
+}
+
+// The judging screen: every contestant's photo + current score, with the
+// buzzed-in player highlighted. Shown from buzz-in until the host rules.
+function renderJudgingPanel() {
+  const panel = document.getElementById('judgingPanel');
+  const buzzerId = state.buzzers[0] && state.buzzers[0].id;
+  const cards = Object.entries(state.players)
+    .sort((a, b) => b[1].score - a[1].score)
+    .map(([id, p]) => `
+      <div class="judging-card${id === buzzerId ? ' buzzed' : ''}" style="border-color:${p.color}">
+        ${avatar(id, p, 96)}
+        <div class="jc-name">${escHtml(p.name)}${id === buzzerId ? ' 🔔' : ''}</div>
+        <div class="jc-score">$${p.score.toLocaleString()}</div>
+      </div>`).join('');
+  panel.innerHTML = `<div class="judging-grid">${cards}</div>`;
 }
 
 // The buzz button is rendered from authoritative server state plus the synced
@@ -496,12 +553,12 @@ function showScreen(phase) {
 }
 
 function renderLobby() {
-  const players = Object.values(state.players || {});
+  const players = Object.entries(state.players || {});
   document.getElementById('lobbyContent').innerHTML = `
     <h2>Waiting for Host to Start</h2>
     <p style="color:#aaa;margin-bottom:8px">Players joined:</p>
     <div class="player-list">
-      ${players.map(p => `<div class="player-chip" style="background:${p.color}">${escHtml(p.name)}</div>`).join('')}
+      ${players.map(([id, p]) => `<div class="player-chip" style="background:${p.color}">${avatar(id, p, 28)}${escHtml(p.name)}</div>`).join('')}
     </div>
   `;
 }
@@ -515,13 +572,13 @@ function renderGame() {
   document.getElementById('roundLabel').textContent = label;
 
   // Scoreboard
-  const players = Object.values(state.players || {});
+  const players = Object.entries(state.players || {});
   const controlPlayer = state.boardControl ? state.players[state.boardControl] : null;
   document.getElementById('scoreboard').innerHTML =
     (controlPlayer ? `<div class="control-chip" style="border-color:${controlPlayer.color}">🎯 ${escHtml(controlPlayer.name)}</div>` : '') +
     players
-      .sort((a,b) => b.score - a.score)
-      .map(p => `<div class="score-chip${p.disconnected ? ' dim' : ''}" style="background:${p.color}">${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
+      .sort((a, b) => b[1].score - a[1].score)
+      .map(([id, p]) => `<div class="score-chip${p.disconnected ? ' dim' : ''}" style="background:${p.color}">${avatar(id, p, 22)}${escHtml(p.name)}: $${p.score.toLocaleString()}</div>`)
       .join('');
 
   // Host controls
@@ -594,6 +651,12 @@ function renderQuestionModal() {
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
   const revealed = !!q.revealed;
   const ddReadyToJudge = q.isDailyDouble && state.dailyDoubleWager !== null;
+
+  // Judging screen (photos + scores) — shown from buzz-in until the host rules
+  const judging = hasTopBuzzer && !revealed && !q.isDailyDouble;
+  const judgingPanel = document.getElementById('judgingPanel');
+  if (judging) { renderJudgingPanel(); judgingPanel.classList.remove('hidden'); }
+  else judgingPanel.classList.add('hidden');
 
   // Answer visibility:
   //  • revealed on timeout → shown to EVERYONE for 5s
@@ -688,11 +751,11 @@ function renderQuestionModal() {
 }
 
 function renderGameOver() {
-  const players = Object.values(state.players || {}).sort((a,b) => b.score - a.score);
-  const maxScore = players[0]?.score;
-  document.getElementById('finalScores').innerHTML = players.map((p, i) => `
+  const players = Object.entries(state.players || {}).sort((a, b) => b[1].score - a[1].score);
+  const maxScore = players[0] && players[0][1].score;
+  document.getElementById('finalScores').innerHTML = players.map(([id, p], i) => `
     <div class="final-score-row" style="background:${p.color}">
-      <span>${i+1}. ${escHtml(p.name)}</span>
+      <span class="fs-name">${avatar(id, p, 36)} ${i+1}. ${escHtml(p.name)}</span>
       <span>$${p.score.toLocaleString()}${p.score === maxScore && i === 0 ? '<span class="winner-crown">👑</span>' : ''}</span>
     </div>
   `).join('');
