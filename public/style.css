@@ -211,9 +211,9 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   color: #000;
 }
 
-/* Avatars */
+/* Avatars (rectangular) */
 .avatar {
-  border-radius: 50%;
+  border-radius: 6px;
   object-fit: cover;
   vertical-align: middle;
   border: 2px solid rgba(255,255,255,0.6);
@@ -225,7 +225,7 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   justify-content: center;
   color: #000;
   font-weight: 900;
-  border-radius: 50%;
+  border-radius: 6px;
 }
 .player-chip, .score-chip { display: inline-flex; align-items: center; gap: 6px; }
 .fs-name { display: inline-flex; align-items: center; gap: 8px; }
@@ -233,39 +233,67 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 /* Photo capture on landing */
 #photoRow { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 #photoPreview {
-  width: 90px; height: 90px;
-  border-radius: 50%;
+  width: 110px; height: 90px;
+  border-radius: 8px;
   object-fit: cover;
   border: 3px solid #F5A623;
 }
 
-/* Judging screen */
-#judgingPanel { width: 100%; }
-.judging-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  justify-content: center;
+/* Judging screen — full-screen photo grid with score over the bottom third */
+#judgingPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #000;
 }
-.judging-card {
-  background: rgba(0,0,0,0.35);
-  border: 3px solid;
-  border-radius: 14px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  min-width: 110px;
-  transition: transform 0.15s, box-shadow 0.15s;
+.jp-grid {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  gap: 2px;
 }
-.judging-card.buzzed {
-  transform: scale(1.08);
-  box-shadow: 0 0 22px rgba(245,166,35,0.9);
-  background: rgba(245,166,35,0.18);
+.jp-cell {
+  position: relative;
+  overflow: hidden;
+  background: #111;
 }
-.judging-card .jc-name { font-weight: bold; font-size: 0.95rem; }
-.judging-card .jc-score { font-size: 1.2rem; font-weight: 900; color: #F5A623; }
+.jp-cell.buzzed {
+  outline: 6px solid #F5A623;
+  outline-offset: -6px;
+  z-index: 1;
+}
+.jp-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.jp-noimg {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18vh; font-weight: 900; color: #000;
+}
+.jp-name {
+  position: absolute; top: 0; left: 0; right: 0;
+  padding: 10px 14px;
+  background: linear-gradient(rgba(0,0,0,0.65), transparent);
+  color: #fff; font-weight: bold;
+  font-size: clamp(1rem, 3vw, 1.8rem);
+  text-shadow: 1px 1px 4px #000;
+}
+.jp-score {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 33%;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(transparent, rgba(0,0,0,0.6));
+  color: #fff; font-weight: 900;
+  font-size: clamp(2rem, 9vw, 6rem);
+  text-shadow: 2px 2px 8px #000;
+}
+/* Host judging bar floats on top so the bottom-third scores stay visible */
+.jp-hostbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  z-index: 201;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 12px;
+  background: rgba(0,0,0,0.8);
+}
+.jp-answer { color: #2ecc71; font-weight: bold; font-size: 1.3rem; text-align: center; }
+.jp-buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
 /* Spinner */
 .spinner {

@@ -274,14 +274,16 @@ function onPhotoSelected(e) {
   reader.onload = () => {
     const img = new Image();
     img.onload = () => {
-      const size = 160;
+      // Keep the photo's natural (rectangular) shape, capped at 480px on the
+      // long edge — big enough to fill the full-screen judging grid.
+      const maxDim = 480;
+      const s = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * s));
+      const h = Math.max(1, Math.round(img.height * s));
       const canvas = document.createElement('canvas');
-      canvas.width = size; canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      const min = Math.min(img.width, img.height);
-      const sx = (img.width - min) / 2, sy = (img.height - min) / 2;
-      ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
-      pendingPhoto = canvas.toDataURL('image/jpeg', 0.6);
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      pendingPhoto = canvas.toDataURL('image/jpeg', 0.7);
       const prev = document.getElementById('photoPreview');
       prev.src = pendingPhoto; prev.classList.remove('hidden');
       // If we've already joined, send it now
@@ -359,20 +361,44 @@ function tickModal() {
   updateBuzzButton();
 }
 
-// The judging screen: every contestant's photo + current score, with the
-// buzzed-in player highlighted. Shown from buzz-in until the host rules.
+// The judging screen: full-screen grid of contestant photos with each score
+// overlaid (white) on the bottom third. Buzzed-in player highlighted. Shown
+// from buzz-in until the host rules. The host also gets answer + judge buttons.
 function renderJudgingPanel() {
   const panel = document.getElementById('judgingPanel');
+  const q = state.currentQuestion;
   const buzzerId = state.buzzers[0] && state.buzzers[0].id;
-  const cards = Object.entries(state.players)
-    .sort((a, b) => b[1].score - a[1].score)
-    .map(([id, p]) => `
-      <div class="judging-card${id === buzzerId ? ' buzzed' : ''}" style="border-color:${p.color}">
-        ${avatar(id, p, 96)}
-        <div class="jc-name">${escHtml(p.name)}${id === buzzerId ? ' 🔔' : ''}</div>
-        <div class="jc-score">$${p.score.toLocaleString()}</div>
-      </div>`).join('');
-  panel.innerHTML = `<div class="judging-grid">${cards}</div>`;
+  const players = Object.entries(state.players);
+  const n = players.length || 1;
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+
+  const cells = players.map(([id, p]) => {
+    const img = p.hasPhoto
+      ? `<img class="jp-img" src="/api/photo/${id}?v=${p.photoVersion || 0}">`
+      : `<div class="jp-img jp-noimg" style="background:${p.color}">${escHtml((p.name && p.name[0] ? p.name[0] : '?').toUpperCase())}</div>`;
+    return `<div class="jp-cell${id === buzzerId ? ' buzzed' : ''}">
+      ${img}
+      <div class="jp-name">${escHtml(p.name)}${id === buzzerId ? ' 🔔' : ''}</div>
+      <div class="jp-score">$${p.score.toLocaleString()}</div>
+    </div>`;
+  }).join('');
+
+  let hostBar = '';
+  if (isHost && buzzerId) {
+    const player = state.players[buzzerId];
+    const value = q.dollarValue;
+    hostBar = `<div class="jp-hostbar">
+      <div class="jp-answer">${escHtml(q.answer)}</div>
+      <div class="jp-buttons">
+        <button class="award-btn award-correct" onclick="awardPoints('${buzzerId}', true)">✓ Correct (+$${value})</button>
+        <button class="award-btn award-wrong" onclick="awardPoints('${buzzerId}', false)">✗ Wrong (-$${value})</button>
+      </div>
+    </div>`;
+  }
+
+  panel.innerHTML =
+    `<div class="jp-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr)">${cells}</div>${hostBar}`;
 }
 
 // The buzz button is rendered from authoritative server state plus the synced
