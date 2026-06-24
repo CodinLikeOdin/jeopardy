@@ -373,6 +373,43 @@ function rerollAll() {
   });
 }
 
+// Add a topic to the saved random-selection pool for future games.
+async function addTopic() {
+  const t = (prompt('Add a topic to the random pool:') || '').trim();
+  if (!t) return;
+  try {
+    const res = await fetch('/api/categories/pool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', topic: t }),
+    });
+    if (!res.ok) throw new Error();
+    categoryPool = (await res.json()).pool;
+    alert(`Added "${t}". The pool now has ${categoryPool.length} topics.`);
+  } catch (e) {
+    alert('Could not add the topic.');
+  }
+}
+
+// Remove a topic from the saved random-selection pool.
+async function deleteTopic() {
+  const list = categoryPool.slice().sort().join(', ');
+  const t = (prompt('Delete which topic from the pool? Type the exact name:\n\n' + list) || '').trim();
+  if (!t) return;
+  try {
+    const res = await fetch('/api/categories/pool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'remove', topic: t }),
+    });
+    if (!res.ok) throw new Error();
+    categoryPool = (await res.json()).pool;
+    alert(`Removed "${t}". The pool now has ${categoryPool.length} topics.`);
+  } catch (e) {
+    alert('Could not delete the topic.');
+  }
+}
+
 function render() {
   if (!state) return;
 

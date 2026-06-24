@@ -62,8 +62,10 @@
           <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random">⟳</button></div>
         </div>
       </div>
-      <div style="display:flex;gap:12px;margin-top:20px">
+      <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;justify-content:center">
         <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>
+        <button class="btn btn-secondary" onclick="addTopic()">➕ Add Topic</button>
+        <button class="btn btn-secondary" onclick="deleteTopic()">🗑 Delete Topic</button>
         <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
       </div>
     </div>

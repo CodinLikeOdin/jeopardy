@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const Anthropic = require('@anthropic-ai/sdk');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,8 +13,42 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
+
 app.get('/api/categories', (req, res) => {
-  res.sendFile(path.join(__dirname, 'categories.json'));
+  res.sendFile(CATEGORIES_PATH);
+});
+
+// Add or remove a topic from the random-selection pool in categories.json.
+// body: { action: 'add' | 'remove', topic: '...' }
+app.post('/api/categories/pool', (req, res) => {
+  const { action, topic } = req.body || {};
+  const t = (topic || '').trim();
+  if (!t) return res.status(400).json({ error: 'no topic' });
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8'));
+  } catch (e) {
+    return res.status(500).json({ error: 'could not read categories file' });
+  }
+  data.pool = data.pool || [];
+
+  if (action === 'add') {
+    if (!data.pool.some(c => c.toLowerCase() === t.toLowerCase())) data.pool.push(t);
+    data.pool.sort((a, b) => a.localeCompare(b));
+  } else if (action === 'remove') {
+    data.pool = data.pool.filter(c => c.toLowerCase() !== t.toLowerCase());
+  } else {
+    return res.status(400).json({ error: 'bad action' });
+  }
+
+  try {
+    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(data, null, 2) + '\n');
+  } catch (e) {
+    return res.status(500).json({ error: 'could not save categories file' });
+  }
+  res.json({ pool: data.pool });
 });
 
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
@@ -168,7 +203,7 @@ function revealAnswerThenClear() {
     gameState.buzzArmTime = null;
     currentAudio = null;
     broadcastState();
-  }, 5000);
+  }, 2500);
 }
 
 function resetGame() {
