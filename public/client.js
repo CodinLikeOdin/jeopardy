@@ -282,12 +282,40 @@ socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
 
-// A lightweight ticker re-evaluates the buzz button as the synced clock crosses
-// the arm time / a lockout expiry (no server message fires at those instants).
-let buzzTicker = null;
-function ensureBuzzTicker(active) {
-  if (active && !buzzTicker) buzzTicker = setInterval(updateBuzzButton, 80);
-  else if (!active && buzzTicker) { clearInterval(buzzTicker); buzzTicker = null; }
+// A lightweight ticker re-evaluates time-sensitive modal bits as the synced
+// clock crosses the audio-start moment and the buzz arm time (no server message
+// fires at those instants).
+let modalTicker = null;
+function ensureModalTicker(active) {
+  if (active && !modalTicker) modalTicker = setInterval(tickModal, 80);
+  else if (!active && modalTicker) { clearInterval(modalTicker); modalTicker = null; }
+}
+
+// Reveal the clue text only once the spoken audio has started, and show the
+// "BUZZ NOW!" cue once buzzers arm. Driven by the synced clock.
+function tickModal() {
+  if (!state || !state.currentQuestion) { ensureModalTicker(false); return; }
+  const q = state.currentQuestion;
+  const now = serverNow();
+  const audioStarted = state.audioStartTime != null && now >= state.audioStartTime;
+  const armed = state.buzzArmTime != null && now >= state.buzzArmTime;
+  const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
+
+  // Clue text appears when the speech begins (or once the answer is revealed)
+  const clueEl = document.getElementById('modalClue');
+  if (audioStarted || q.revealed) clueEl.classList.remove('hidden');
+  else clueEl.classList.add('hidden');
+
+  // Only a "BUZZ NOW!" cue (the old "Reading…" message is gone)
+  const rs = document.getElementById('readingStatus');
+  if (armed && !hasTopBuzzer && !q.revealed && !q.isDailyDouble) {
+    rs.classList.remove('hidden');
+    rs.textContent = '🔔 BUZZ NOW!';
+  } else {
+    rs.classList.add('hidden');
+  }
+
+  updateBuzzButton();
 }
 
 // The buzz button is rendered from authoritative server state plus the synced
@@ -300,13 +328,11 @@ function updateBuzzButton() {
   const q = state && state.currentQuestion;
   if (!q || !state.buzzOpen || q.isDailyDouble || q.revealed) {
     btn.classList.add('hidden');
-    ensureBuzzTicker(false);
     return;
   }
   // A player who already answered wrong is out for this question
   if ((q.bannedPlayers || []).includes(myId)) {
     btn.classList.add('hidden');
-    ensureBuzzTicker(false);
     return;
   }
 
@@ -316,12 +342,10 @@ function updateBuzzButton() {
     // Someone won the buzz
     if (iAmBuzzer) { btn.classList.remove('hidden'); btn.disabled = true; btn.textContent = 'BUZZED!'; }
     else btn.classList.add('hidden');
-    ensureBuzzTicker(false);
     return;
   }
 
   btn.classList.remove('hidden');
-  ensureBuzzTicker(true);
 
   const now = serverNow();
   const arm = state.buzzArmTime;
@@ -545,6 +569,7 @@ function renderQuestionModal() {
   const modal = document.getElementById('questionModal');
   if (!state.currentQuestion) {
     modal.classList.add('hidden');
+    ensureModalTicker(false);
     return;
   }
   modal.classList.remove('hidden');
@@ -562,20 +587,13 @@ function renderQuestionModal() {
   }
   // Schedule synced audio on EVERY device (deduped internally per question)
   scheduleClueAudio();
+  // Drive clue-text reveal, BUZZ-NOW cue, and buzz button off the synced clock
+  ensureModalTicker(true);
+  tickModal();
 
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
   const revealed = !!q.revealed;
-  const armed = state.buzzArmTime != null && serverNow() >= state.buzzArmTime;
   const ddReadyToJudge = q.isDailyDouble && state.dailyDoubleWager !== null;
-
-  // Reading status indicator (hidden once someone buzzed or the answer is shown)
-  const readingStatus = document.getElementById('readingStatus');
-  if (!hasTopBuzzer && !revealed && !q.isDailyDouble) {
-    readingStatus.classList.remove('hidden');
-    readingStatus.textContent = armed ? '🔔 BUZZ NOW!' : '🔊 Reading…';
-  } else {
-    readingStatus.classList.add('hidden');
-  }
 
   // Answer visibility:
   //  • revealed on timeout → shown to EVERYONE for 5s
