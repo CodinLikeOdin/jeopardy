@@ -226,14 +226,14 @@ function scheduleNoBuzzTimeout(windowMs) {
   }, fireIn);
 }
 
-// Daily double answer window: if the host hasn't judged by `deadline`, reveal
-// the answer (no score change — the host scores the wager when they judge).
+// Daily double answer window: when time runs out, just play the buzzer. The
+// clue stays up and the host marks it correct/incorrect with no time limit.
 function scheduleDailyDoubleTimeout(deadline) {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
   questionTimeoutHandle = setTimeout(() => {
     questionTimeoutHandle = null;
     if (gameState.currentQuestion && gameState.currentQuestion.isDailyDouble && !gameState.currentQuestion.revealed) {
-      revealAnswerThenClear();
+      io.emit('questionTimeout');   // play the buzzer; host still judges, untimed
     }
   }, Math.max(0, deadline - Date.now()));
 }
@@ -667,7 +667,25 @@ io.on('connection', (socket) => {
 
   socket.on('resetGame', () => {
     if (socket.id !== gameState.hostId) return;
-    resetGame();
+    // Soft reset: keep the host and players (scores zeroed), clear the board,
+    // and return to category setup so a new game can start immediately.
+    clearQuestionTimeout();
+    lockUntil = {};
+    pendingBuzzes = [];
+    currentAudio = null;
+    Object.values(gameState.players).forEach(p => { p.score = 0; });
+    gameState.board = { single: null, double: null };
+    gameState.currentQuestion = null;
+    gameState.buzzers = [];
+    gameState.buzzOpen = false;
+    gameState.audioStartTime = null;
+    gameState.buzzArmTime = null;
+    gameState.dailyDoubles = [];
+    gameState.dailyDoubleWager = null;
+    gameState.boardControl = null;
+    gameState.usedSquares = { single: {}, double: {} };
+    gameState.categories = [];
+    gameState.phase = 'setup';
     broadcastState();
   });
 
