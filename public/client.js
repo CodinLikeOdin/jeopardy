@@ -378,9 +378,11 @@ function renderJudgingPanel() {
       ? `<img class="jp-img" src="/api/photo/${id}?v=${p.photoVersion || 0}">`
       : `<div class="jp-img jp-noimg" style="background:${p.color}">${escHtml((p.name && p.name[0] ? p.name[0] : '?').toUpperCase())}</div>`;
     return `<div class="jp-cell${id === buzzerId ? ' buzzed' : ''}">
+      <div class="jp-top">
+        <div class="jp-score">$${p.score.toLocaleString()}</div>
+        <div class="jp-name">${escHtml(p.name)}${id === buzzerId ? ' 🔔' : ''}</div>
+      </div>
       ${img}
-      <div class="jp-name">${escHtml(p.name)}${id === buzzerId ? ' 🔔' : ''}</div>
-      <div class="jp-score">$${p.score.toLocaleString()}</div>
     </div>`;
   }).join('');
 

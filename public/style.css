@@ -255,34 +255,56 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 .jp-cell {
   position: relative;
   overflow: hidden;
-  background: #111;
+  background: #000;
+  container-type: size;            /* lets the score scale to THIS cell's size */
+  display: flex;
+  flex-direction: column;
 }
 .jp-cell.buzzed {
   outline: 6px solid #F5A623;
   outline-offset: -6px;
   z-index: 1;
 }
-.jp-img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.jp-noimg {
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18vh; font-weight: 900; color: #000;
-}
-.jp-name {
-  position: absolute; top: 0; left: 0; right: 0;
-  padding: 10px 14px;
-  background: linear-gradient(rgba(0,0,0,0.65), transparent);
-  color: #fff; font-weight: bold;
-  font-size: clamp(1rem, 3vw, 1.8rem);
-  text-shadow: 1px 1px 4px #000;
+/* Top area (score + name) grows to fill whatever space the photo doesn't use */
+.jp-top {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3em;
+  padding: 6px;
+  overflow: hidden;
 }
 .jp-score {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 33%;
+  color: #fff;
+  font-weight: 900;
+  line-height: 1;
+  font-size: clamp(2rem, 24cqmin, 14rem);   /* as large as the cell allows */
+  text-shadow: 2px 2px 10px #000;
+}
+.jp-name {
+  color: #fff;
+  font-weight: bold;
+  font-size: clamp(0.85rem, 7cqmin, 2.4rem);
+  text-shadow: 1px 1px 4px #000;
+  text-align: center;
+}
+/* Photo keeps its aspect ratio, anchored to the bottom of the cell */
+.jp-img {
+  flex: 0 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-height: 72%;
+  object-fit: contain;
+  object-position: bottom;
+  display: block;
+}
+.jp-noimg {
+  height: 40%;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(transparent, rgba(0,0,0,0.6));
-  color: #fff; font-weight: 900;
-  font-size: clamp(2rem, 9vw, 6rem);
-  text-shadow: 2px 2px 8px #000;
+  font-size: 20cqmin; font-weight: 900; color: #000;
 }
 /* Host judging bar floats on top so the bottom-third scores stay visible */
 .jp-hostbar {
