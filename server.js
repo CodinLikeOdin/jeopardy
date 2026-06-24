@@ -272,6 +272,20 @@ function reopenBuzzers(windowMs) {
   broadcastState();
 }
 
+// Generate + arm the spoken clue for the current question. Returns the
+// server-clock time the clue finishes (clueEnd), or null if the question
+// changed while awaiting TTS. Sets audioStartTime so clients reveal/play it.
+async function readCurrentClue(q) {
+  const buffer = await generateTTS(q.clue);
+  if (gameState.currentQuestion !== q) return null;   // replaced/cleared while awaiting
+  currentAudio = buffer ? { id: 'a' + Date.now(), buffer } : null;
+  const durationMs = buffer
+    ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
+    : Math.ceil(q.clue.length / 12 * 1000) + 1500;
+  gameState.audioStartTime = Date.now() + LEAD_IN_MS;
+  return gameState.audioStartTime + durationMs;
+}
+
 // Show the answer to EVERYONE for 5 seconds, then clear the board.
 function revealAnswerThenClear() {
   clearQuestionTimeout();
@@ -570,31 +584,20 @@ io.on('connection', (socket) => {
     gameState.dailyDoubleWager = null;
     broadcastState();
 
-    // Generate the clue audio once on the server; every device fetches the same
-    // bytes and plays it in sync, so no contestant hears it earlier than another.
-    const audioId = `${round}|${category}|${valueIndex}|${Date.now()}`;
-    const buffer = await generateTTS(clue.clue);
-    // The question may have been cleared/replaced while awaiting TTS
-    if (!gameState.currentQuestion || gameState.currentQuestion.clue !== clue.clue) return;
+    // Daily double: do NOT read or reveal the clue yet. The contestant places
+    // their wager first (untimed); the clue is read from the wager handler.
+    if (isDailyDouble) return;
 
-    currentAudio = buffer ? { id: audioId, buffer } : null;
-    // Estimate clip duration: 128kbps CBR mp3 ≈ bytes*8/128000 sec, + tail.
-    const durationMs = buffer
-      ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
-      : Math.ceil(clue.clue.length / 12 * 1000) + 1500;
+    // Normal question: read the clue now (synced audio on every device).
+    const thisQ = gameState.currentQuestion;
+    const clueEnd = await readCurrentClue(thisQ);
+    if (clueEnd == null) return;       // question changed while awaiting TTS
 
-    gameState.audioStartTime = Date.now() + LEAD_IN_MS;
-    const clueEnd = gameState.audioStartTime + durationMs;
-    if (!isDailyDouble) {
-      gameState.buzzOpen = true;
-      // With the early-buzz penalty ON, buzzers arm when the clue FINISHES.
-      // With it OFF, they arm when the clue starts appearing (buzz any time, no penalty).
-      gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
-      scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
-    } else {
-      // Daily double: only the controlling contestant answers; give them a fixed window.
-      scheduleDailyDoubleTimeout(clueEnd + DD_TIMEOUT_MS);
-    }
+    gameState.buzzOpen = true;
+    // With the early-buzz penalty ON, buzzers arm when the clue FINISHES.
+    // With it OFF, they arm when the clue starts appearing (buzz any time, no penalty).
+    gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
+    scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
     broadcastState();
   });
 
@@ -665,10 +668,11 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('dailyDoubleWager', ({ wager }) => {
+  socket.on('dailyDoubleWager', async ({ wager }) => {
     if (socket.id !== gameState.hostId) return;
     const q = gameState.currentQuestion;
     if (!q || !q.isDailyDouble) return;
+    if (gameState.dailyDoubleWager !== null) return;  // wager already locked in
     // The controlling contestant may wager up to their current score, or up to
     // the clue's dollar value if that's higher (even when their score is < $0).
     const ctrl = gameState.boardControl ? gameState.players[gameState.boardControl] : null;
@@ -676,6 +680,12 @@ io.on('connection', (socket) => {
     let w = Math.round(Number(wager));
     if (!Number.isFinite(w)) w = q.dollarValue;
     gameState.dailyDoubleWager = Math.max(5, Math.min(maxWager, w));
+    broadcastState();
+
+    // Now (and only now) read/reveal the clue, then start the answer timer.
+    const clueEnd = await readCurrentClue(q);
+    if (clueEnd == null) return;
+    scheduleDailyDoubleTimeout(clueEnd + DD_TIMEOUT_MS);
     broadcastState();
   });
 
