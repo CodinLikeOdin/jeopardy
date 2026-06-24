@@ -619,28 +619,32 @@ io.on('connection', (socket) => {
     if (q.bannedPlayers.includes(socket.id)) return;          // already answered wrong
     if (gameState.buzzers.some(b => b.id === socket.id)) return;
     if (pendingBuzzes.some(b => b.id === socket.id)) return;   // already in this window
-    if (typeof ts !== 'number') ts = Date.now();
 
+    // Whether the window is open is judged by the SERVER's own clock (robust to
+    // a contestant's clock drift). The client's synced `ts` is used ONLY to
+    // order near-simultaneous buzzes fairly.
+    const nowSrv = Date.now();
+    const orderTs = (typeof ts === 'number') ? ts : nowSrv;
     const armTime = gameState.buzzArmTime;
     const penalty = gameState.settings.enforceEarlyPenalty;
+    const early = armTime == null || nowSrv < armTime;
 
     if (penalty) {
-      const locked = lockUntil[socket.id] && ts < lockUntil[socket.id];
+      const locked = lockUntil[socket.id] && nowSrv < lockUntil[socket.id];
       // Pressed before buzzers armed, or during a personal lockout → penalize.
       // Every such press RESETS the lockout, so mashing keeps you frozen.
-      if (armTime == null || ts < armTime || locked) {
-        lockUntil[socket.id] = ts + LOCKOUT_MS;
+      if (early || locked) {
+        lockUntil[socket.id] = nowSrv + LOCKOUT_MS;
         broadcastState();
         return;
       }
-    } else {
-      // Penalty disabled: buzzing before the window opens is simply ignored (no lockout).
-      if (armTime == null || ts < armTime) return;
+    } else if (early) {
+      return; // penalty disabled: buzzing before the window opens is just ignored
     }
 
     // Valid buzz — collect for a short settle window, then earliest ts wins.
     if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
-    pendingBuzzes.push({ id: socket.id, name: player.name, ts });
+    pendingBuzzes.push({ id: socket.id, name: player.name, ts: orderTs });
     if (!buzzSettleHandle) buzzSettleHandle = setTimeout(finalizeBuzz, SETTLE_MS);
   });
 
@@ -667,14 +671,21 @@ io.on('connection', (socket) => {
     // Daily doubles have a single player — a wrong answer ends the clue.
     if (q.isDailyDouble) { revealAnswerThenClear(); return; }
 
-    const contestants = Object.keys(gameState.players);
-    const remaining = contestants.filter(id => !q.bannedPlayers.includes(id));
-    if (remaining.length === 0) {
-      revealAnswerThenClear();            // nobody left to try
-    } else {
-      reopenBuzzers(RETRY_TIMEOUT_MS);    // 3s for the others
-    }
+    // Buzzer + big "Incorrect" flash on every device for ~1s, then the others
+    // get a chance. The wrong player is banned from re-buzzing this clue.
+    const wrongName = gameState.players[playerId] ? gameState.players[playerId].name : '';
+    io.emit('wrongAnswer', { name: wrongName, lost: value });
+    gameState.buzzOpen = false;           // closed during the 1s "Incorrect" flash
+    clearQuestionTimeout();
     broadcastState();
+
+    const remaining = Object.keys(gameState.players).filter(id => !q.bannedPlayers.includes(id));
+    questionTimeoutHandle = setTimeout(() => {
+      questionTimeoutHandle = null;
+      if (!gameState.currentQuestion || gameState.currentQuestion !== q) return;
+      if (remaining.length === 0) revealAnswerThenClear();   // nobody left to try
+      else reopenBuzzers(RETRY_TIMEOUT_MS);                   // 3s for the others
+    }, 1000);
   });
 
   socket.on('dailyDoubleWager', async ({ wager }) => {

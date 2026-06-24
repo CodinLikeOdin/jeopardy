@@ -318,6 +318,19 @@ socket.on('questionTimeout', () => {
   playWrongSound();
 });
 
+// A contestant answered wrong — buzzer on every device + a 1s "Incorrect" flash
+let incorrectTimer = null;
+socket.on('wrongAnswer', ({ name, lost }) => {
+  playWrongSound();
+  const ov = document.getElementById('incorrectOverlay');
+  ov.innerHTML =
+    `<div class="io-big">INCORRECT</div>` +
+    `<div class="io-sub">${escHtml(name || '')} &minus;$${Number(lost || 0).toLocaleString()}</div>`;
+  ov.classList.remove('hidden');
+  if (incorrectTimer) clearTimeout(incorrectTimer);
+  incorrectTimer = setTimeout(() => ov.classList.add('hidden'), 1000);
+});
+
 socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
@@ -349,9 +362,11 @@ function tickModal() {
   if ((audioStarted || q.revealed) && !judging) clueEl.classList.remove('hidden');
   else clueEl.classList.add('hidden');
 
-  // Only a "BUZZ NOW!" cue (the old "Reading…" message is gone)
+  // "BUZZ NOW!" cue — hidden for a player who already answered wrong (they only
+  // see the clue while the others get their chance)
+  const banned = (q.bannedPlayers || []).includes(myId);
   const rs = document.getElementById('readingStatus');
-  if (armed && !hasTopBuzzer && !q.revealed && !q.isDailyDouble) {
+  if (armed && !hasTopBuzzer && !q.revealed && !q.isDailyDouble && !banned) {
     rs.classList.remove('hidden');
     rs.textContent = '🔔 BUZZ NOW!';
   } else {
