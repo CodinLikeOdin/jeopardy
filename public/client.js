@@ -328,7 +328,7 @@ socket.on('wrongAnswer', ({ name, lost }) => {
     `<div class="io-sub">${escHtml(name || '')} &minus;$${Number(lost || 0).toLocaleString()}</div>`;
   ov.classList.remove('hidden');
   if (incorrectTimer) clearTimeout(incorrectTimer);
-  incorrectTimer = setTimeout(() => ov.classList.add('hidden'), 1000);
+  incorrectTimer = setTimeout(() => ov.classList.add('hidden'), 2000);
 });
 
 socket.on('error', ({ message }) => {

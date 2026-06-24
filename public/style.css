@@ -529,15 +529,18 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 #incorrectOverlay .io-big {
   color: #fff;
   font-weight: 900;
-  font-size: clamp(3rem, 22vw, 16rem);
-  letter-spacing: 2px;
+  font-size: clamp(2.4rem, 17.6vw, 12.8rem);
+  letter-spacing: 1px;
   line-height: 1;
+  max-width: 96vw;
+  text-align: center;
   text-shadow: 3px 3px 0 #000;
 }
 #incorrectOverlay .io-sub {
   color: #fff;
   font-weight: bold;
-  font-size: clamp(1.4rem, 7vw, 4rem);
+  font-size: clamp(1.1rem, 5.6vw, 3.2rem);
+  text-align: center;
   text-shadow: 2px 2px 0 #000;
 }
 

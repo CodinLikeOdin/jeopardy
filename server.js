@@ -675,7 +675,7 @@ io.on('connection', (socket) => {
     // get a chance. The wrong player is banned from re-buzzing this clue.
     const wrongName = gameState.players[playerId] ? gameState.players[playerId].name : '';
     io.emit('wrongAnswer', { name: wrongName, lost: value });
-    gameState.buzzOpen = false;           // closed during the 1s "Incorrect" flash
+    gameState.buzzOpen = false;           // closed during the 2s "Incorrect" flash
     clearQuestionTimeout();
     broadcastState();
 
@@ -685,7 +685,7 @@ io.on('connection', (socket) => {
       if (!gameState.currentQuestion || gameState.currentQuestion !== q) return;
       if (remaining.length === 0) revealAnswerThenClear();   // nobody left to try
       else reopenBuzzers(RETRY_TIMEOUT_MS);                   // 3s for the others
-    }, 1000);
+    }, 2000);
   });
 
   socket.on('dailyDoubleWager', async ({ wager }) => {
