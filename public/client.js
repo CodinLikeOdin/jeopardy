@@ -1239,10 +1239,10 @@ function buildFinalView(f, role) {
       ${role_body}
     </div>`;
   } else if (f.stage === 'reveal') {
-    body = `<div class="card final-card final-reveal-card">
+    body = `<div class="card final-card final-spotlight-card">
       <div class="final-answer-reveal">Correct response: ${escHtml(f.answer)}</div>
-      <div id="fRevealList"></div>
-      <div id="fCrownWrap"></div>
+      <div id="fSpotlight"></div>
+      <div id="fSpotControls" class="spot-controls"></div>
     </div>`;
   }
 
@@ -1289,41 +1289,57 @@ function updateFinalView(f, role) {
 
   if (f.stage === 'reveal') {
     const order = (f.revealOrder && f.revealOrder.length) ? f.revealOrder : f.eligible;
-    const list = document.getElementById('fRevealList');
-    if (list) {
-      list.innerHTML = order.map(id => {
-        const p = state.players[id]; if (!p) return '';
-        const r = f.reveal[id] || {};
-        const ansText = (f.answers[id] && f.answers[id].trim()) ? escHtml(f.answers[id]) : '<em>(no response)</em>';
-        const ans = r.answer ? ansText : '<span class="final-hidden">— hidden —</span>';
-        const wag = r.wager ? ('$' + (f.wagers[id] || 0).toLocaleString()) : '—';
-        const jClass = r.judged === 'correct' ? 'jc' : (r.judged === 'wrong' ? 'jw' : '');
-        const result = r.judged ? `<span class="frr-result">${r.judged === 'correct' ? '✓ Correct' : '✗ Incorrect'}</span>` : '';
-        let hostBtns = '';
-        if (isHost) {
-          hostBtns = `<div class="final-revbtns">
-            <button class="btn btn-sm btn-secondary" onclick="revealFinalAnswer('${id}')" ${r.answer ? 'disabled' : ''}>Reveal Answer</button>
-            <button class="btn btn-sm btn-secondary" onclick="revealFinalWager('${id}')" ${r.wager ? 'disabled' : ''}>Reveal Wager</button>
-            <button class="award-btn award-correct" onclick="judgeFinal('${id}', true)" ${r.judged ? 'disabled' : ''}>✓</button>
-            <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)" ${r.judged ? 'disabled' : ''}>✗</button>
-          </div>`;
-        }
-        return `<div class="final-reveal-row ${jClass}">
-          <div class="frr-top"><span class="frr-name">${avatar(id, p, 28)} ${escHtml(p.name)}</span><span class="frr-score">$${p.score.toLocaleString()}</span></div>
-          <div class="frr-ans">${ans}</div>
-          <div class="frr-wager">Wager: ${wag} ${result}</div>
-          ${hostBtns}
-        </div>`;
-      }).join('');
-    }
-    const crown = document.getElementById('fCrownWrap');
-    if (crown) {
-      const allJudged = order.every(id => f.reveal[id] && f.reveal[id].judged);
-      crown.innerHTML = (isHost && allJudged)
-        ? `<button class="btn btn-primary" onclick="crownWinner()">👑 Crown the Winner</button>`
-        : '';
+    const idx = Math.min(f.spotlight || 0, order.length - 1);
+    const id = order[idx];
+    const p = state.players[id];
+    const sp = document.getElementById('fSpotlight');
+    if (p && sp) {
+      const r = f.reveal[id] || {};
+      const wager = f.wagers[id] || 0;
+      const judged = r.judged;                       // 'correct' | 'wrong' | null
+      // Reconstruct the pre-wager score so we can count UP to the new total.
+      const curScore = p.score;
+      const oldScore = judged === 'correct' ? curScore - wager
+                     : judged === 'wrong'   ? curScore + wager : curScore;
+      const ansText = (f.answers[id] && f.answers[id].trim()) ? escHtml(f.answers[id]) : '<em>(no response)</em>';
+
+      sp.innerHTML = `
+        <div class="spot-progress">Contestant ${idx + 1} of ${order.length}</div>
+        <div class="spot-avatar">${avatar(id, p, 130)}</div>
+        <div class="spot-name">${escHtml(p.name)}</div>
+        <div class="spot-score" id="spotScore">$${oldScore.toLocaleString()}</div>
+        <div class="spot-wager ${r.wager ? '' : 'hidden'}">Wager: <strong>$${wager.toLocaleString()}</strong></div>
+        <div class="spot-answer ${r.answer ? '' : 'hidden'}">${ansText}</div>
+        ${judged ? `<div class="spot-result spot-${judged}">${judged === 'correct' ? '✓ CORRECT' : '✗ INCORRECT'}</div>` : ''}
+      `;
+      if (judged && oldScore !== curScore) animateNumber(document.getElementById('spotScore'), oldScore, curScore, 900);
+
+      const ctrls = document.getElementById('fSpotControls');
+      if (ctrls) {
+        if (!isHost) ctrls.innerHTML = '';
+        else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
+        else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
+        else if (!judged) ctrls.innerHTML =
+          `<button class="award-btn award-correct" onclick="judgeFinal('${id}', true)">✓ Correct</button>
+           <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)">✗ Wrong</button>`;
+        else if (idx < order.length - 1) ctrls.innerHTML = `<button class="btn btn-primary" onclick="nextFinalContestant()">Next Contestant →</button>`;
+        else ctrls.innerHTML = `<button class="btn btn-primary" onclick="crownWinner()">👑 Crown the Winner</button>`;
+      }
     }
   }
+}
+
+// Ease-out count-up animation for the dramatic score reveal.
+function animateNumber(el, from, to, ms) {
+  if (!el) return;
+  const start = performance.now();
+  const tick = (now) => {
+    const t = Math.min(1, (now - start) / ms);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = '$' + Math.round(from + (to - from) * eased).toLocaleString();
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 // Lightweight ticker: reveals the clue when speech starts, counts the timer
@@ -1441,6 +1457,7 @@ function beginFinalReveal() { socket.emit('beginFinalReveal'); }
 function revealFinalAnswer(playerId) { socket.emit('revealFinalAnswer', { playerId }); }
 function revealFinalWager(playerId) { socket.emit('revealFinalWager', { playerId }); }
 function judgeFinal(playerId, correct) { socket.emit('judgeFinal', { playerId, correct }); }
+function nextFinalContestant() { socket.emit('nextFinalContestant'); }
 function crownWinner() { socket.emit('crownWinner'); }
 
 // ── Player Actions ────────────────────────────────────────────

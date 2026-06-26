@@ -414,6 +414,7 @@ function startFinalRound() {
     answerDeadline: null,      // server-clock ms the answer input locks
     reveal: {},                // id -> { wager, answer, judged }
     revealOrder: [],           // eligible ids, fixed lowest->highest at reveal start
+    spotlight: 0,              // index into revealOrder: which contestant is on screen
     winnerId: null,
     crowned: false,
   };
@@ -818,8 +819,17 @@ io.on('connection', (socket) => {
     f.revealOrder = [...f.eligible].sort((a, b) =>
       ((gameState.players[a] && gameState.players[a].score) || 0) -
       ((gameState.players[b] && gameState.players[b].score) || 0));
+    f.spotlight = 0;            // start the dramatic reveal on the lowest scorer
     currentAudio = null;
     broadcastState();
+  });
+
+  // Advance the spotlight to the next contestant in the reveal.
+  socket.on('nextFinalContestant', () => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'reveal') return;
+    if (f.spotlight < f.revealOrder.length - 1) { f.spotlight++; broadcastState(); }
   });
 
   socket.on('revealFinalAnswer', ({ playerId }) => {
