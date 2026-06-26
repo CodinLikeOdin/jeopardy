@@ -827,7 +827,7 @@ function render() {
   if (state.phase !== 'review') reviewBuilt = false;
   if (state.phase !== 'final') ensureFinalTicker(false);
   if (state.phase !== 'gameover') stopGameOverTheme();
-  if (!state.final) { finalViewSig = ''; finalAudioKey = null; stopJingle(); }
+  if (!state.final) { finalViewSig = ''; finalAudioKey = null; spotBuiltFor = null; stopJingle(); }
 }
 
 function showScreen(phase) {
@@ -1162,6 +1162,8 @@ function beginRounds() {
 let finalViewSig = '';
 let finalTicker = null;
 let finalAnswerTimer = null;
+let spotBuiltFor = null;        // which contestant's reveal skeleton is currently built
+let spotJudgedShown = false;    // so the score count-up animation only runs once
 
 function ensureFinalTicker(active) {
   if (active && !finalTicker) finalTicker = setInterval(tickFinal, 100);
@@ -1190,6 +1192,7 @@ function renderFinal() {
 }
 
 function buildFinalView(f, role) {
+  spotBuiltFor = null;            // skeleton is being rebuilt → invalidate spotlight cache
   const c = document.getElementById('finalContent');
   const myScore = (state.players[myId] && state.players[myId].score) || 0;
   let body = '';
@@ -1303,20 +1306,45 @@ function updateFinalView(f, role) {
                      : judged === 'wrong'   ? curScore + wager : curScore;
       const ansText = (f.answers[id] && f.answers[id].trim()) ? escHtml(f.answers[id]) : '<em>(no response)</em>';
 
-      sp.innerHTML = `
-        <div class="spot-progress">Contestant ${idx + 1} of ${order.length}</div>
-        <div class="spot-avatar">${avatar(id, p, 130)}</div>
-        <div class="spot-name">${escHtml(p.name)}</div>
-        <div class="spot-score" id="spotScore">$${oldScore.toLocaleString()}</div>
-        <div class="spot-wager ${r.wager ? '' : 'hidden'}">Wager: <strong>$${wager.toLocaleString()}</strong></div>
-        <div class="spot-answer ${r.answer ? '' : 'hidden'}">${ansText}</div>
-        ${judged ? `<div class="spot-result spot-${judged}">${judged === 'correct' ? '✓ CORRECT' : '✗ INCORRECT'}</div>` : ''}
-      `;
-      if (judged && oldScore !== curScore) animateNumber(document.getElementById('spotScore'), oldScore, curScore, 900);
+      // Build the skeleton ONCE per contestant; afterwards we only un-hide rows
+      // so each reveal animates on its own (identical on every screen).
+      if (spotBuiltFor !== id + '@' + idx) {
+        spotBuiltFor = id + '@' + idx;
+        spotJudgedShown = false;
+        sp.innerHTML = `
+          <div class="spot-progress">Contestant ${idx + 1} of ${order.length}</div>
+          <div class="spot-avatar">${avatar(id, p, 120)}</div>
+          <div class="spot-name">${escHtml(p.name)}</div>
+          <div class="spot-stat">
+            <div class="spot-label" id="spotScoreLabel">Score</div>
+            <div class="spot-num spot-score" id="spotScore">$${oldScore.toLocaleString()}</div>
+          </div>
+          <div class="spot-stat hidden" id="spotWagerRow">
+            <div class="spot-label">Wager</div>
+            <div class="spot-num spot-wager-num">$${wager.toLocaleString()}</div>
+          </div>
+          <div class="spot-stat hidden" id="spotAnswerRow">
+            <div class="spot-label">Answer</div>
+            <div class="spot-answer">${ansText}</div>
+          </div>
+          <div class="spot-result hidden" id="spotResult"></div>`;
+      }
+
+      // Incremental reveals (CSS animates each as it un-hides).
+      if (r.wager) { const el = document.getElementById('spotWagerRow'); if (el) el.classList.remove('hidden'); }
+      if (r.answer) { const el = document.getElementById('spotAnswerRow'); if (el) el.classList.remove('hidden'); }
+      if (judged && !spotJudgedShown) {
+        spotJudgedShown = true;
+        const res = document.getElementById('spotResult');
+        if (res) { res.textContent = judged === 'correct' ? '✓ CORRECT' : '✗ INCORRECT'; res.className = `spot-result spot-${judged}`; }
+        const lbl = document.getElementById('spotScoreLabel');
+        if (lbl) lbl.textContent = 'New Score';
+        if (oldScore !== curScore) animateNumber(document.getElementById('spotScore'), oldScore, curScore, 900);
+      }
 
       const ctrls = document.getElementById('fSpotControls');
       if (ctrls) {
-        if (!isHost) ctrls.innerHTML = '';
+        if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
         else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
         else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
         else if (!judged) ctrls.innerHTML =
