@@ -106,15 +106,15 @@ app.post('/api/categories/pool', async (req, res) => {
 
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
 
-// Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
-// Hard-capped with an AbortController so a slow/hung request can NEVER freeze
-// the game — on timeout we just proceed with the on-screen text + visual cue.
-async function generateTTS(text) {
-  if (!process.env.ELEVENLABS_API_KEY) { lastTtsError = 'ELEVENLABS_API_KEY not set on server'; return null; }
+const TTS_TIMEOUT_MS = 15000;   // per-attempt cap (generous for Render cold starts)
+
+// One ElevenLabs attempt. Returns { buffer } on success, or { retriable } on
+// failure. Transient problems (timeout, 429, 5xx) are retriable; auth/quota/bad
+// request (other 4xx) are not — retrying those just wastes time.
+async function ttsAttempt(text, voiceId) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
   try {
-    const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
       method: 'POST',
       signal: controller.signal,
@@ -133,17 +133,32 @@ async function generateTTS(text) {
       const body = await response.text();
       lastTtsError = `HTTP ${response.status}: ${body.slice(0, 300)}`;
       console.error('ElevenLabs error:', lastTtsError);
-      return null;
+      return { retriable: response.status === 429 || response.status >= 500 };
     }
     lastTtsError = 'ok';
-    return Buffer.from(await response.arrayBuffer());
+    return { buffer: Buffer.from(await response.arrayBuffer()) };
   } catch (err) {
-    lastTtsError = (err && err.name === 'AbortError' ? 'timed out after 12s' : 'fetch threw: ' + (err && err.message ? err.message : String(err)));
+    const aborted = err && err.name === 'AbortError';
+    lastTtsError = aborted ? `timed out after ${TTS_TIMEOUT_MS}ms` : 'fetch threw: ' + (err && err.message ? err.message : String(err));
     console.error('TTS error:', lastTtsError);
-    return null;
+    return { retriable: true };   // timeout / network blip → worth one retry
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
+// Retries once on a transient failure (e.g. a Render cold start timing out the
+// first call); on permanent failure we just proceed with on-screen text + cue.
+async function generateTTS(text) {
+  if (!process.env.ELEVENLABS_API_KEY) { lastTtsError = 'ELEVENLABS_API_KEY not set on server'; return null; }
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await ttsAttempt(text, voiceId);
+    if (r.buffer) return r.buffer;
+    if (!r.retriable) return null;
+  }
+  return null;
 }
 
 // The current question's audio, cached so every device fetches the same bytes

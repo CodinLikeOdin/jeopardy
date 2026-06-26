@@ -168,12 +168,15 @@ async function scheduleClueAudio() {
   setAudioStatus('♪ loading clue audio…');
   try {
     const res = await fetch('/api/tts/current');
-    if (!res.ok) {                      // no audio (e.g. no API key on server)
-      setAudioStatus(`🔇 no audio from server (${res.status})`);
+    if (!res.ok) {                      // no audio (TTS failed / quota / cold start)
+      setAudioStatus(isHost ? '🎤 No audio — please read the clue aloud' : '🔇 Audio unavailable — clue is shown above');
       return;
     }
     const blob = await res.blob();
-    if (!blob || blob.size === 0) { setAudioStatus('🔇 empty audio from server'); return; }
+    if (!blob || blob.size === 0) {
+      setAudioStatus(isHost ? '🎤 No audio — please read the clue aloud' : '🔇 Audio unavailable — clue is shown above');
+      return;
+    }
     if (clueAudioUrl) { URL.revokeObjectURL(clueAudioUrl); }
     clueAudioUrl = URL.createObjectURL(blob);
     const el = getClueAudioEl();
