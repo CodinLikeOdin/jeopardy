@@ -157,6 +157,17 @@ app.get('/api/tts/current', (req, res) => {
   res.send(currentAudio.buffer);
 });
 
+// Diagnostic: why TTS is/ isn't working (no secrets leaked).
+app.get('/api/tts/diag', (req, res) => {
+  res.json({
+    hasKey: !!process.env.ELEVENLABS_API_KEY,
+    keyLen: process.env.ELEVENLABS_API_KEY ? process.env.ELEVENLABS_API_KEY.trim().length : 0,
+    voiceId: process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG (default)',
+    lastTtsError,
+    haveCurrentAudio: !!currentAudio,
+  });
+});
+
 // Contestant photos (small JPEG thumbnails) kept in memory, served by player id.
 // Stored separately from game state so frequent state broadcasts stay tiny.
 let photos = {}; // playerId -> Buffer
