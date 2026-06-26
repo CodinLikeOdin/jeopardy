@@ -723,6 +723,167 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 .setup-columns .card { flex: 1; min-width: 280px; }
 
+/* Final Jeopardy: setup category card */
+.final-setup-card { max-width: 860px; width: 100%; margin-top: 16px; }
+
+/* Final Jeopardy: review screen (host editor) */
+.review-card { max-width: 560px; }
+.rv-label {
+  align-self: flex-start;
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: #aac4ff;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+.rv-input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 2px solid #444;
+  background: #0a0a2e;
+  color: #fff;
+  font-size: 1rem;
+  font-family: inherit;
+}
+.rv-input:focus { outline: none; border-color: #F5A623; }
+.rv-area { resize: vertical; line-height: 1.4; }
+.rv-status { color: #F5A623; font-weight: bold; }
+.rv-buttons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 6px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Final Jeopardy: round play */
+#final { justify-content: flex-start; padding-top: 28px; }
+.final-header { text-align: center; margin-bottom: 18px; }
+.final-title {
+  font-size: clamp(1.8rem, 7vw, 3.4rem);
+  font-weight: 900;
+  font-style: italic;
+  color: #F5A623;
+  letter-spacing: 3px;
+  text-shadow: 3px 3px 0 #000;
+}
+.final-cat {
+  margin-top: 8px;
+  font-size: clamp(1.1rem, 4vw, 1.8rem);
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #fff;
+}
+.final-card { max-width: 620px; width: 100%; }
+.final-clue {
+  font-size: clamp(1.2rem, 3.5vw, 1.8rem);
+  font-weight: bold;
+  line-height: 1.4;
+  padding: 16px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 8px;
+  width: 100%;
+  text-align: center;
+}
+.final-countdown {
+  font-size: clamp(2.4rem, 12vw, 5rem);
+  font-weight: 900;
+  color: #F5A623;
+  text-shadow: 2px 2px 0 #000;
+  min-height: 0.6em;
+}
+.final-timeup {
+  font-size: clamp(1.6rem, 7vw, 2.6rem);
+  font-weight: 900;
+  color: #e74c3c;
+  letter-spacing: 2px;
+  text-shadow: 2px 2px 0 #000;
+}
+.final-answer-host, .final-answer-reveal {
+  color: #2ecc71;
+  font-weight: bold;
+  font-size: 1.2rem;
+  text-align: center;
+  background: rgba(0,0,0,0.35);
+  padding: 10px 16px;
+  border-radius: 8px;
+  width: 100%;
+}
+.final-progress { font-weight: bold; color: #F5A623; text-align: center; margin-bottom: 6px; }
+.final-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.final-row span { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Final Jeopardy: reveal rows */
+.final-reveal-card { max-width: 680px; }
+.final-reveal-row {
+  width: 100%;
+  border: 2px solid rgba(255,255,255,0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: rgba(0,0,0,0.25);
+}
+.final-reveal-row.jc { border-color: #2ecc71; }
+.final-reveal-row.jw { border-color: #e74c3c; }
+.frr-top { display: flex; align-items: center; justify-content: space-between; font-weight: bold; }
+.frr-name { display: inline-flex; align-items: center; gap: 8px; }
+.frr-score { color: #F5A623; }
+.frr-ans { font-size: 1.3rem; font-weight: bold; margin: 8px 0; text-align: center; }
+.final-hidden { color: #888; font-style: italic; }
+.frr-wager { text-align: center; color: #ddd; }
+.frr-result { font-weight: bold; margin-left: 8px; }
+.final-revbtns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+#fCrownWrap { text-align: center; margin-top: 8px; }
+
+/* Final Jeopardy: winner celebration overlay */
+#winnerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: radial-gradient(circle at center, rgba(6,12,233,0.96), rgba(0,0,0,0.97));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.winner-inner {
+  text-align: center;
+  animation: winnerPop 0.7s cubic-bezier(0.16,1,0.3,1) both;
+}
+.winner-word {
+  font-size: clamp(3rem, 18vw, 11rem);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 4px;
+  background: linear-gradient(135deg, #fff6b0, #F5A623, #fff, #F5A623, #ffe066);
+  background-size: 300% 300%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 30px rgba(245,166,35,0.9));
+  animation: shimmer 2.5s linear infinite;
+}
+.winner-avatar { margin: 18px auto; }
+.winner-avatar .avatar {
+  width: 200px; height: 200px;
+  border: 5px solid #F5A623;
+  box-shadow: 0 0 40px rgba(245,166,35,0.8);
+  border-radius: 12px;
+}
+.winner-avatar .avatar-initial { font-size: 90px; }
+.winner-name {
+  font-size: clamp(1.6rem, 7vw, 3rem);
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 2px 2px 0 #000;
+  letter-spacing: 2px;
+}
+@keyframes winnerPop {
+  from { opacity: 0; transform: scale(0.3); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
 /* Responsive */
 #game {
   display: flex;

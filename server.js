@@ -189,9 +189,11 @@ const REARM_MS = 1000;         // synced "get ready" before buzzers re-arm on re
 const SETTLE_MS = 250;         // collect near-simultaneous buzzes, then pick earliest
 const LOCKOUT_MS = 250;        // early/mash penalty
 const DD_TIMEOUT_MS = 20000;   // daily double answer window
+const DEFAULT_FINAL_MS = 30000; // default Final Jeopardy answer window
+const FINAL_PAUSE_MS = 1000;    // beat between the final clue ending and the timer/music
 
 function defaultSettings() {
-  return { enforceEarlyPenalty: true, buzzTimeoutMs: DEFAULT_BUZZ_MS };
+  return { enforceEarlyPenalty: true, buzzTimeoutMs: DEFAULT_BUZZ_MS, finalAnswerMs: DEFAULT_FINAL_MS };
 }
 
 let gameState = {
@@ -210,6 +212,10 @@ let gameState = {
   boardControl: null,
   settings: defaultSettings(),
   usedSquares: { single: {}, double: {} },
+  finalCategory: null,       // host-chosen Final Jeopardy category ('' => AI picks)
+  finalJeopardy: null,       // { category, clue, answer } — reviewed/edited before the game
+  finalRegenerating: false,  // true while the host's regenerate request is in flight
+  final: null,               // live Final Jeopardy play-state (see startFinalRound)
 };
 
 // Per-question transient state (lockUntil is broadcast; the rest is server-only)
@@ -218,11 +224,16 @@ let pendingBuzzes = [];     // valid buzzes collected during the settle window
 let buzzSettleHandle = null;
 let questionTimeoutHandle = null;
 let revealTimeoutHandle = null;
+let finalTimeoutHandle = null;  // Final Jeopardy answer-window close
 
 function clearQuestionTimeout() {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
   if (revealTimeoutHandle) { clearTimeout(revealTimeoutHandle); revealTimeoutHandle = null; }
   if (buzzSettleHandle) { clearTimeout(buzzSettleHandle); buzzSettleHandle = null; }
+}
+
+function clearFinalTimeout() {
+  if (finalTimeoutHandle) { clearTimeout(finalTimeoutHandle); finalTimeoutHandle = null; }
 }
 
 // Schedule the "nobody buzzed" timeout to fire `windowMs` after buzzers arm.
@@ -305,6 +316,7 @@ function revealAnswerThenClear() {
 
 function resetGame() {
   clearQuestionTimeout();
+  clearFinalTimeout();
   lockUntil = {};
   pendingBuzzes = [];
   currentAudio = null;
@@ -324,6 +336,10 @@ function resetGame() {
     boardControl: null,
     settings: defaultSettings(),
     usedSquares: { single: {}, double: {} },
+    finalCategory: null,
+    finalJeopardy: null,
+    finalRegenerating: false,
+    final: null,
   };
 }
 
@@ -331,6 +347,47 @@ function broadcastState() {
   // lockUntil (per-player buzz penalty) is transient server state, but the
   // client needs it to render each player's buzz button authoritatively.
   io.emit('state', JSON.parse(JSON.stringify({ ...gameState, lockUntil })));
+}
+
+// Initialize Final Jeopardy when advancing past Double Jeopardy. Eligible =
+// players with a positive score (classic rule); if nobody qualifies, everyone
+// plays so the round isn't empty.
+function startFinalRound() {
+  clearQuestionTimeout();
+  clearFinalTimeout();
+  currentAudio = null;
+  const fj = gameState.finalJeopardy;
+  if (!fj) { gameState.phase = 'gameover'; broadcastState(); return; }
+  const entries = Object.entries(gameState.players).filter(([id, p]) => !p.isHost);
+  let eligible = entries.filter(([id, p]) => p.score > 0).map(([id]) => id);
+  if (eligible.length === 0) eligible = entries.map(([id]) => id);
+  gameState.currentQuestion = null;
+  gameState.buzzers = [];
+  gameState.buzzOpen = false;
+  gameState.audioStartTime = null;
+  gameState.buzzArmTime = null;
+  gameState.final = {
+    category: fj.category,
+    clue: fj.clue,
+    answer: fj.answer,
+    stage: 'wager',            // 'wager' -> 'answer' -> 'reveal'
+    eligible,
+    wagers: {},                // id -> number (secret until revealed)
+    answers: {},               // id -> string (secret until revealed)
+    answered: {},              // id -> true once entered (drives host progress)
+    answerClosed: false,
+    audioStartTime: null,      // synced clue-audio start
+    jingleStart: null,         // synced think-music start (= clue end)
+    jingleDurationMs: null,
+    answerDeadline: null,      // server-clock ms the answer input locks
+    reveal: {},                // id -> { wager, answer, judged }
+    revealOrder: [],           // eligible ids, fixed lowest->highest at reveal start
+    winnerId: null,
+    crowned: false,
+  };
+  eligible.forEach(id => { gameState.final.reveal[id] = { wager: false, answer: false, judged: null }; });
+  gameState.phase = 'final';
+  broadcastState();
 }
 
 function extractJSON(text) {
@@ -435,6 +492,57 @@ Rules:
   throw lastErr;
 }
 
+// Generate ONE Final Jeopardy clue — harder and more nuanced than a board clue.
+// If `category` is blank, the model also chooses a fitting, broadly-known category.
+// Returns { category, clue, answer }. Same self-verifying / leak-check retries.
+async function generateFinalClue(category) {
+  const want = (category || '').trim();
+  const catLine = want
+    ? `The category is: "${want}".`
+    : `First choose a single, interesting Final Jeopardy category (broadly known, not obscure), then write the clue for it.`;
+  const prompt = `You are writing the FINAL JEOPARDY! clue — the hardest, climactic clue of the game.
+
+${catLine}
+
+Write ONE challenging but fair clue. In Jeopardy! the host READS a clue (a statement) and players respond with a QUESTION ("What is...?"). A Final Jeopardy clue is harder than a normal board clue: it rewards real knowledge, but a well-read player should still have a chance.
+
+ACCURACY IS CRITICAL: state only facts you are highly confident are true. Mentally fact-check the clue and fix anything uncertain before answering.
+
+NEVER GIVE AWAY THE ANSWER: the answer (and the category name) must NOT appear anywhere in the clue text.
+
+Return ONLY valid JSON, no other text:
+{"category":"...","clue":"...","answer":"What is ...?"}
+
+Rules:
+- the clue is a statement/description, NOT a question
+- the answer is phrased "What is X?" or "Who is X?"
+- the answer (and category name) must never appear in the clue text
+- concise and unambiguous`;
+
+  let lastErr, best = null, bestLeaks = Infinity;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const resp = await client.messages.create(
+        { model: 'claude-sonnet-4-6', max_tokens: 500, messages: [{ role: 'user', content: prompt }] },
+        { timeout: 45000, maxRetries: 1 }
+      );
+      const obj = JSON.parse(extractJSON(resp.content[0].text.trim()));
+      const cat = (want || obj.category || '').trim();
+      if (!obj.clue || !obj.answer || !cat) throw new Error('unexpected final clue shape');
+      const result = { category: cat, clue: String(obj.clue).trim(), answer: String(obj.answer).trim() };
+      const leaks = clueLeaks(result.clue, result.answer, result.category) ? 1 : 0;
+      if (leaks < bestLeaks) { best = result; bestLeaks = leaks; }
+      if (leaks === 0) return result;
+      throw new Error('answer leaked into the final clue');
+    } catch (err) {
+      lastErr = err;
+      console.error(`generate final clue attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
+  if (best) return best;
+  throw lastErr;
+}
+
 function pickDailyDoubles(board) {
   const cats = Object.keys(board);
   const squares = [];
@@ -453,13 +561,16 @@ io.on('connection', (socket) => {
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
-    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles }) => {
+    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles, finalJeopardy }) => {
       gameState.board.single = board;
       gameState.board.double = board;
       gameState.dailyDoubles = dailyDoubles || [];
-      gameState.phase = phase || 'single';
       gameState.categories = Object.keys(board);
       if (settings) gameState.settings = { ...gameState.settings, ...settings };
+      if (finalJeopardy) gameState.finalJeopardy = finalJeopardy;
+      const ph = phase || 'single';
+      if (ph === 'final') { startFinalRound(); return; }   // builds gameState.final
+      gameState.phase = ph;
       broadcastState();
     });
   }
@@ -493,35 +604,52 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('setCategories', async ({ singleCategories, doubleCategories, settings }) => {
+  socket.on('setCategories', async ({ singleCategories, doubleCategories, finalCategory, finalClue: finalClueText, finalAnswer: finalAnswerText, settings }) => {
     if (socket.id !== gameState.hostId) return;
     // Apply per-game settings from the setup screen
     if (settings) {
       gameState.settings = {
         enforceEarlyPenalty: settings.enforceEarlyPenalty !== false,
         buzzTimeoutMs: Math.max(2000, Math.min(60000, Number(settings.buzzTimeoutMs) || DEFAULT_BUZZ_MS)),
+        finalAnswerMs: Math.max(5000, Math.min(180000, Number(settings.finalAnswerMs) || DEFAULT_FINAL_MS)),
       };
     }
+    gameState.finalCategory = (finalCategory || '').trim();
+
+    // If the host authored their own final question AND answer, use them as-is
+    // (no AI call); they can still tweak the wording on the review screen.
+    const fClue = (finalClueText || '').trim();
+    const fAns = (finalAnswerText || '').trim();
+    const manualFinal = (fClue && fAns)
+      ? { category: gameState.finalCategory || 'Final Jeopardy', clue: fClue, answer: fAns }
+      : null;
+
     gameState.phase = 'generating';
     gameState.categories = singleCategories;
 
     const tasks = [
       ...singleCategories.map(cat => ({ round: 'single', cat })),
       ...doubleCategories.map(cat => ({ round: 'double', cat })),
+      { round: 'final' },
     ];
     gameState.genProgress = { done: 0, total: tasks.length };
     broadcastState();
 
     const singleBoard = {}, doubleBoard = {};
+    let finalClue = null;
     const failures = [];
 
-    // All categories generate concurrently (capped), with live progress.
+    // All categories (plus the Final Jeopardy clue) generate concurrently.
     await runWithConcurrency(tasks, 6, async (t) => {
       try {
-        const clues = await generateQuestions(t.cat);
-        (t.round === 'single' ? singleBoard : doubleBoard)[t.cat] = clues;
+        if (t.round === 'final') {
+          finalClue = manualFinal ? manualFinal : await generateFinalClue(gameState.finalCategory);
+        } else {
+          const clues = await generateQuestions(t.cat);
+          (t.round === 'single' ? singleBoard : doubleBoard)[t.cat] = clues;
+        }
       } catch (err) {
-        failures.push(t.cat);
+        failures.push(t.round === 'final' ? 'Final Jeopardy' : t.cat);
       }
       gameState.genProgress.done++;
       broadcastState();
@@ -539,8 +667,173 @@ io.on('connection', (socket) => {
     gameState.board.single = singleBoard;
     gameState.board.double = doubleBoard;
     gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
-    gameState.phase = 'single';
+    gameState.finalJeopardy = finalClue;
+    // Pause on the review screen so the host can vet/edit/regenerate the final
+    // clue before the game starts.
+    gameState.phase = 'review';
     gameState.genProgress = null;
+    broadcastState();
+  });
+
+  // ── Final Jeopardy review (host vets the clue before the game starts) ──
+  socket.on('editFinal', ({ category, clue, answer }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (!gameState.finalJeopardy) return;
+    if (typeof category === 'string') gameState.finalJeopardy.category = category.trim();
+    if (typeof clue === 'string') gameState.finalJeopardy.clue = clue.trim();
+    if (typeof answer === 'string') gameState.finalJeopardy.answer = answer.trim();
+    broadcastState();
+  });
+
+  socket.on('regenerateFinal', async ({ category } = {}) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (gameState.finalRegenerating) return;
+    // If the host typed a new category, regenerate for that; else reuse current.
+    const cat = (typeof category === 'string' && category.trim())
+      ? category.trim()
+      : (gameState.finalJeopardy ? gameState.finalJeopardy.category : '');
+    gameState.finalRegenerating = true;
+    broadcastState();
+    try {
+      const fresh = await generateFinalClue(cat);
+      if (gameState.phase === 'review') gameState.finalJeopardy = fresh;
+    } catch (err) {
+      socket.emit('error', { message: 'Could not regenerate the final clue. Try again.' });
+    } finally {
+      gameState.finalRegenerating = false;
+      broadcastState();
+    }
+  });
+
+  socket.on('beginRounds', () => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    gameState.phase = 'single';
+    broadcastState();
+  });
+
+  // ── Final Jeopardy play ──────────────────────────────────────
+  // Each eligible contestant secretly wagers 0..their score.
+  socket.on('submitFinalWager', ({ wager }) => {
+    const f = gameState.final;
+    if (!f || f.stage !== 'wager' || !f.eligible.includes(socket.id)) return;
+    const p = gameState.players[socket.id];
+    if (!p) return;
+    const max = Math.max(0, p.score);
+    let w = Math.round(Number(wager));
+    if (!Number.isFinite(w)) w = 0;
+    f.wagers[socket.id] = Math.max(0, Math.min(max, w));
+    broadcastState();
+  });
+
+  // Host reveals the clue and starts the synced think-music + answer timer.
+  socket.on('startFinalClue', async () => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'wager') return;
+    f.stage = 'answer';
+    broadcastState();
+
+    // Read the clue aloud (synced on every device); the jingle + timer then run
+    // for finalAnswerMs starting when the clue audio finishes.
+    const buffer = await generateTTS(f.clue);
+    if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
+    currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
+    const durationMs = buffer
+      ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
+      : Math.ceil(f.clue.length / 12 * 1000) + 1500;
+    f.audioStartTime = Date.now() + LEAD_IN_MS;
+    const clueEnd = f.audioStartTime + durationMs;
+    // No buzzer/buzz timer in Final Jeopardy: read the clue, pause a beat, then
+    // the answer timer + think-music start together.
+    f.jingleStart = clueEnd + FINAL_PAUSE_MS;
+    f.jingleDurationMs = gameState.settings.finalAnswerMs;
+    f.answerDeadline = f.jingleStart + gameState.settings.finalAnswerMs;
+    broadcastState();
+
+    clearFinalTimeout();
+    finalTimeoutHandle = setTimeout(() => {
+      finalTimeoutHandle = null;
+      if (gameState.final === f && f.stage === 'answer' && !f.answerClosed) {
+        f.answerClosed = true;
+        io.emit('finalTimeUp');
+        broadcastState();
+      }
+    }, Math.max(0, f.answerDeadline - Date.now()));
+  });
+
+  // Contestant's answer — stored secretly. Only the FIRST submission broadcasts
+  // (to bump the host's "answered" count); later edits update silently.
+  socket.on('submitFinalAnswer', ({ answer }) => {
+    const f = gameState.final;
+    if (!f || f.stage !== 'answer' || f.answerClosed) return;
+    if (f.answerDeadline && Date.now() > f.answerDeadline) return;
+    if (!f.eligible.includes(socket.id)) return;
+    f.answers[socket.id] = String(answer == null ? '' : answer).slice(0, 200);
+    if (!f.answered[socket.id]) { f.answered[socket.id] = true; broadcastState(); }
+  });
+
+  // Host moves from the (closed) answer stage into one-at-a-time reveal.
+  socket.on('beginFinalReveal', () => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'answer') return;
+    clearFinalTimeout();
+    f.answerClosed = true;
+    f.stage = 'reveal';
+    // Fix the reveal order now (lowest score first) so applying wagers mid-reveal
+    // doesn't reshuffle the list.
+    f.revealOrder = [...f.eligible].sort((a, b) =>
+      ((gameState.players[a] && gameState.players[a].score) || 0) -
+      ((gameState.players[b] && gameState.players[b].score) || 0));
+    currentAudio = null;
+    broadcastState();
+  });
+
+  socket.on('revealFinalAnswer', ({ playerId }) => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
+    f.reveal[playerId].answer = true;
+    broadcastState();
+  });
+
+  socket.on('revealFinalWager', ({ playerId }) => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
+    f.reveal[playerId].wager = true;
+    broadcastState();
+  });
+
+  // Host rules on a revealed answer; the wager is applied to that player's score.
+  socket.on('judgeFinal', ({ playerId, correct }) => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
+    if (f.reveal[playerId].judged) return;     // already scored — don't double-apply
+    const p = gameState.players[playerId];
+    const wager = f.wagers[playerId] || 0;
+    if (p) p.score += correct ? wager : -wager;
+    f.reveal[playerId].judged = correct ? 'correct' : 'wrong';
+    f.reveal[playerId].answer = true;          // judging implies both are shown
+    f.reveal[playerId].wager = true;
+    broadcastState();
+  });
+
+  socket.on('crownWinner', () => {
+    if (socket.id !== gameState.hostId) return;
+    const f = gameState.final;
+    if (!f) return;
+    const ranked = Object.entries(gameState.players)
+      .filter(([id, p]) => !p.isHost)
+      .sort((a, b) => b[1].score - a[1].score);
+    const winner = ranked[0];
+    if (winner) {
+      f.winnerId = winner[0];
+      f.crowned = true;
+      io.emit('finalWinner', { id: winner[0], name: winner[1].name });
+    }
+    gameState.phase = 'gameover';
     broadcastState();
   });
 
@@ -720,7 +1013,8 @@ io.on('connection', (socket) => {
       gameState.buzzers = [];
       gameState.buzzOpen = false;
     } else if (gameState.phase === 'double') {
-      gameState.phase = 'gameover';
+      startFinalRound();
+      return;
     }
     broadcastState();
   });
@@ -730,6 +1024,7 @@ io.on('connection', (socket) => {
     // Soft reset: keep the host and players (scores zeroed), clear the board,
     // and return to category setup so a new game can start immediately.
     clearQuestionTimeout();
+    clearFinalTimeout();
     lockUntil = {};
     pendingBuzzes = [];
     currentAudio = null;
@@ -745,6 +1040,10 @@ io.on('connection', (socket) => {
     gameState.boardControl = null;
     gameState.usedSquares = { single: {}, double: {} };
     gameState.categories = [];
+    gameState.finalCategory = null;
+    gameState.finalJeopardy = null;
+    gameState.finalRegenerating = false;
+    gameState.final = null;
     gameState.phase = 'setup';
     broadcastState();
   });

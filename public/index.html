@@ -23,6 +23,9 @@
   <!-- Brief "Incorrect" flash on a wrong answer -->
   <div id="incorrectOverlay" class="hidden"></div>
 
+  <!-- Final Jeopardy winner celebration -->
+  <div id="winnerOverlay" class="hidden"></div>
+
   <div id="app">
     <!-- Landing -->
     <div id="landing" class="screen">
@@ -70,6 +73,18 @@
           <div class="cat-row"><input class="cat-input double-cat" type="text" placeholder="Category 6" maxlength="30"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save this topic to the pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove this topic from the pool">🗑</button></div>
         </div>
       </div>
+      <div class="card final-setup-card">
+        <h2>Final Jeopardy</h2>
+        <p class="subtitle">One climactic clue after Double Jeopardy. Leave the question blank to auto-generate (you'll review &amp; edit it before the game). Or write your own below.</p>
+        <div class="cat-row">
+          <input class="cat-input" id="finalCat" type="text" placeholder="Final category (optional)" maxlength="30">
+          <button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button>
+        </div>
+        <label class="rv-label">Final question (optional)</label>
+        <textarea id="finalClueInput" class="rv-input rv-area" rows="2" placeholder="Leave blank to let the AI write it"></textarea>
+        <label class="rv-label">Final answer</label>
+        <input id="finalAnswerInput" class="rv-input" type="text" placeholder="What is …?  (required only if you wrote your own question)" maxlength="120">
+      </div>
       <div class="settings-row">
         <label class="setting">
           <span>Enforce early-buzz penalty</span>
@@ -79,6 +94,10 @@
         <label class="setting">
           <span>Buzz time limit (seconds)</span>
           <input type="number" id="buzzSeconds" min="2" max="60" value="8" class="num-input">
+        </label>
+        <label class="setting">
+          <span>Final answer time (seconds)</span>
+          <input type="number" id="finalSeconds" min="5" max="180" value="30" class="num-input">
         </label>
       </div>
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;justify-content:center">
@@ -95,6 +114,17 @@
         <h2>Generating Questions...</h2>
         <p id="genStatus">Claude AI is writing your Jeopardy! clues</p>
       </div>
+    </div>
+
+    <!-- Final Jeopardy review (host vets the clue before the game starts) -->
+    <div id="review" class="screen hidden">
+      <div class="logo">JEOPARDY!</div>
+      <div id="reviewContent"></div>
+    </div>
+
+    <!-- Final Jeopardy round -->
+    <div id="final" class="screen hidden">
+      <div id="finalContent"></div>
     </div>
 
     <!-- Game Board -->

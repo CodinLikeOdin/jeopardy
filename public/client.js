@@ -225,6 +225,112 @@ function playWrongSound() {
   playBuzz(t + 0.36, 0.12, FREQ);
 }
 
+// ── Final Jeopardy think-music (synthesized, copyright-free) ─────────────
+// A simple looping motif scheduled against the synced clock so every device
+// plays it together. Reuses the same WebAudio context as the buzzer.
+let jingleOscs = [];
+let jingleStopTimer = null;
+const NOTE = { B4:493.88, C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99, A5:880.0, G4:392.0, A4:440.0, C6:1046.5 };
+
+function stopJingle() {
+  jingleOscs.forEach(o => { try { o.stop(); } catch (e) {} });
+  jingleOscs = [];
+  if (jingleStopTimer) { clearTimeout(jingleStopTimer); jingleStopTimer = null; }
+}
+
+function jingleNote(ctx, freq, t, dur, type, vol) {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type || 'triangle';
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.14, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(ctx.destination);
+  o.start(t); o.stop(t + dur + 0.03);
+  jingleOscs.push(o);
+}
+
+// Schedule the looping motif to START at the synced server time `serverStartTime`
+// and run for `durationMs` (the host-set answer window).
+function playJingle(serverStartTime, durationMs) {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  stopJingle();
+  const lead = (serverStartTime - serverNow()) / 1000;
+  const start = ctx.currentTime + Math.max(0.03, lead);
+  const motif = ['G4','C5','E5','G5','E5','C5','D5','B4'];   // cheerful, ticking feel
+  const beat = 0.34;
+  const totalSec = durationMs / 1000;
+  let t = start, i = 0;
+  while (t < start + totalSec - 0.001) {
+    const n = motif[i % motif.length];
+    jingleNote(ctx, NOTE[n], t, beat * 0.9, 'triangle', 0.13);
+    if (i % motif.length === 0) jingleNote(ctx, NOTE[n] / 2, t, beat * 2 * 0.9, 'sine', 0.09); // bass downbeat
+    t += beat; i++;
+  }
+  jingleStopTimer = setTimeout(stopJingle, durationMs + 250);
+}
+
+// Short triumphant flourish for the winner reveal.
+function playFanfare() {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const t = ctx.currentTime;
+  [NOTE.C5, NOTE.E5, NOTE.G5, NOTE.C6].forEach((fq, i) =>
+    jingleNote(ctx, fq, t + i * 0.13, 0.32, 'square', 0.17));
+}
+
+// Fetch the current clue audio (Final Jeopardy) and play it at a synced time.
+let finalAudioKey = null;
+async function playClueAudioAt(startTime) {
+  try {
+    const res = await fetch('/api/tts/current');
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (!blob || blob.size === 0) return;
+    if (clueAudioUrl) URL.revokeObjectURL(clueAudioUrl);
+    clueAudioUrl = URL.createObjectURL(blob);
+    const el = getClueAudioEl();
+    el.muted = false;
+    el.src = clueAudioUrl; el.load();
+    let started = false;
+    const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
+    const delay = startTime - serverNow();
+    if (delay > 30) setTimeout(go, delay); else go();
+  } catch (e) { /* clue speech is best-effort; the jingle still plays */ }
+}
+
+// Schedule clue speech + think-music once for the Final Jeopardy answer stage.
+function scheduleFinalAudio() {
+  const f = state && state.final;
+  if (!f || f.stage !== 'answer' || f.audioStartTime == null) return;
+  const key = 'final|' + f.audioStartTime;
+  if (key === finalAudioKey) return;
+  finalAudioKey = key;
+  playClueAudioAt(f.audioStartTime);
+  if (f.jingleStart != null && f.jingleDurationMs) playJingle(f.jingleStart, f.jingleDurationMs);
+}
+
+// ── Winner celebration overlay ──────────────────────────────────────────
+let winnerTimer = null;
+function showWinnerOverlay(id, name) {
+  const ov = document.getElementById('winnerOverlay');
+  if (!ov) return;
+  const p = state && state.players && state.players[id];
+  const av = p ? avatar(id, p, 200) : '';
+  ov.innerHTML = `
+    <div class="winner-inner">
+      <div class="winner-word">WINNER</div>
+      <div class="winner-avatar">${av}</div>
+      <div class="winner-name">${escHtml(name || (p && p.name) || '')}</div>
+    </div>`;
+  ov.classList.remove('hidden');
+  playFanfare();
+  if (winnerTimer) clearTimeout(winnerTimer);
+  winnerTimer = setTimeout(() => ov.classList.add('hidden'), 7000);
+}
+
 // ── Connection ──────────────────────────────────────────────
 function unlockAudio() {
   // Unlock Web Audio (used for the buzzer)
@@ -340,6 +446,17 @@ socket.on('correctAnswer', ({ name, earned }) => {
 
 socket.on('error', ({ message }) => {
   alert('Error: ' + message);
+});
+
+// Final Jeopardy answer window closed — stop the think-music everywhere.
+socket.on('finalTimeUp', () => {
+  stopJingle();
+  // The accompanying state broadcast re-renders with the input disabled.
+});
+
+// Final Jeopardy winner — full-screen celebration on every device.
+socket.on('finalWinner', ({ id, name }) => {
+  showWinnerOverlay(id, name);
 });
 
 // A lightweight ticker re-evaluates time-sensitive modal bits as the synced
@@ -578,9 +695,20 @@ function render() {
   if (state.phase === 'single' || state.phase === 'double') {
     renderGame();
   }
+  if (state.phase === 'review') {
+    renderReview();
+  }
+  if (state.phase === 'final') {
+    renderFinal();
+  }
   if (state.phase === 'gameover') {
     renderGameOver();
   }
+
+  // Tidy up Final/review transient UI state once we leave those phases.
+  if (state.phase !== 'review') reviewBuilt = false;
+  if (state.phase !== 'final') ensureFinalTicker(false);
+  if (!state.final) { finalViewSig = ''; finalAudioKey = null; stopJingle(); }
 }
 
 function showScreen(phase) {
@@ -588,11 +716,13 @@ function showScreen(phase) {
     lobby: 'lobby',
     setup: isHost ? 'setup' : 'lobby',
     generating: 'generating',
+    review: 'review',
     single: 'game',
     double: 'game',
+    final: 'final',
     gameover: 'gameover',
   };
-  const screens = ['landing', 'lobby', 'setup', 'generating', 'game', 'gameover'];
+  const screens = ['landing', 'lobby', 'setup', 'generating', 'review', 'game', 'final', 'gameover'];
   screens.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.add('hidden');
@@ -811,6 +941,294 @@ function renderGameOver() {
   `).join('');
 }
 
+// ── Final Jeopardy: review screen ─────────────────────────────
+let reviewBuilt = false;
+let reviewLastContent = '';
+let reviewEditTimer = null;
+
+function renderReview() {
+  const c = document.getElementById('reviewContent');
+  const fj = state.finalJeopardy;
+
+  if (!isHost) {
+    reviewBuilt = false;
+    c.innerHTML = `
+      <div class="card center">
+        <h2>Get Ready!</h2>
+        <p>The host is reviewing the Final Jeopardy question.<br>The game is about to begin…</p>
+      </div>`;
+    return;
+  }
+
+  // Host editor — built once, then we only repopulate when a regenerate lands.
+  if (!reviewBuilt) {
+    c.innerHTML = `
+      <div class="card review-card">
+        <h2>Review Final Jeopardy</h2>
+        <p class="subtitle">Only you see this. Edit the wording or regenerate, then start the game.</p>
+        <label class="rv-label">Category</label>
+        <input id="rvCategory" class="rv-input" type="text" maxlength="40" oninput="onReviewEdit()">
+        <label class="rv-label">Clue (read aloud to players)</label>
+        <textarea id="rvClue" class="rv-input rv-area" rows="3" oninput="onReviewEdit()"></textarea>
+        <label class="rv-label">Answer</label>
+        <input id="rvAnswer" class="rv-input" type="text" maxlength="120" oninput="onReviewEdit()">
+        <div id="rvStatus" class="rv-status hidden"></div>
+        <div class="rv-buttons">
+          <button id="rvRegen" class="btn btn-secondary" onclick="regenerateFinal()">⟳ Regenerate</button>
+          <button id="rvStart" class="btn btn-primary" onclick="beginRounds()">Start Game →</button>
+        </div>
+      </div>`;
+    reviewBuilt = true;
+    reviewLastContent = '';
+  }
+
+  // Repopulate fields from server only when content changed AND we're not typing
+  // (so a regenerate refreshes them, but live edits aren't clobbered).
+  const sig = fj ? JSON.stringify(fj) : '';
+  const active = document.activeElement && document.activeElement.id;
+  const typing = active === 'rvCategory' || active === 'rvClue' || active === 'rvAnswer';
+  if (fj && sig !== reviewLastContent && !typing) {
+    document.getElementById('rvCategory').value = fj.category || '';
+    document.getElementById('rvClue').value = fj.clue || '';
+    document.getElementById('rvAnswer').value = fj.answer || '';
+    reviewLastContent = sig;
+  }
+
+  const regenerating = !!state.finalRegenerating;
+  const status = document.getElementById('rvStatus');
+  const regenBtn = document.getElementById('rvRegen');
+  const startBtn = document.getElementById('rvStart');
+  if (regenerating) {
+    status.classList.remove('hidden');
+    status.textContent = '✍️ Writing a new final clue…';
+  } else {
+    status.classList.add('hidden');
+  }
+  regenBtn.disabled = regenerating;
+  startBtn.disabled = regenerating;
+}
+
+function currentReviewFields() {
+  return {
+    category: (document.getElementById('rvCategory') || {}).value || '',
+    clue: (document.getElementById('rvClue') || {}).value || '',
+    answer: (document.getElementById('rvAnswer') || {}).value || '',
+  };
+}
+
+function onReviewEdit() {
+  if (reviewEditTimer) clearTimeout(reviewEditTimer);
+  reviewEditTimer = setTimeout(() => {
+    const f = currentReviewFields();
+    socket.emit('editFinal', f);
+    // Keep our signature aligned with the server's trimmed echo so it won't
+    // try to repopulate the fields we're editing.
+    reviewLastContent = JSON.stringify({ category: f.category.trim(), clue: f.clue.trim(), answer: f.answer.trim() });
+  }, 400);
+}
+
+function regenerateFinal() {
+  const cat = (document.getElementById('rvCategory') || {}).value || '';
+  socket.emit('regenerateFinal', { category: cat });
+}
+
+function beginRounds() {
+  if (reviewEditTimer) { clearTimeout(reviewEditTimer); reviewEditTimer = null; }
+  socket.emit('editFinal', currentReviewFields());   // flush any pending edit
+  socket.emit('beginRounds');
+}
+
+// ── Final Jeopardy: round play ────────────────────────────────
+let finalViewSig = '';
+let finalTicker = null;
+let finalAnswerTimer = null;
+
+function ensureFinalTicker(active) {
+  if (active && !finalTicker) finalTicker = setInterval(tickFinal, 100);
+  else if (!active && finalTicker) { clearInterval(finalTicker); finalTicker = null; }
+}
+
+function myFinalRole(f) {
+  if (isHost) return 'host';
+  return f.eligible.includes(myId) ? 'player' : 'spectator';
+}
+
+function renderFinal() {
+  const f = state.final;
+  if (!f) return;
+  if (f.stage !== 'answer') stopJingle();
+
+  const role = myFinalRole(f);
+  const wagerLocked = (f.stage === 'wager' && role === 'player')
+    ? Object.prototype.hasOwnProperty.call(f.wagers, myId) : '';
+  const sig = [f.stage, role, f.answerClosed, f.crowned, wagerLocked].join('|');
+  if (sig !== finalViewSig) { buildFinalView(f, role); finalViewSig = sig; }
+  updateFinalView(f, role);
+
+  if (f.stage === 'answer') { scheduleFinalAudio(); ensureFinalTicker(true); }
+  else ensureFinalTicker(false);
+}
+
+function buildFinalView(f, role) {
+  const c = document.getElementById('finalContent');
+  const myScore = (state.players[myId] && state.players[myId].score) || 0;
+  let body = '';
+
+  if (f.stage === 'wager') {
+    if (role === 'host') {
+      body = `<div class="card final-card">
+        <p class="subtitle">Players are placing secret wagers.</p>
+        <div id="fWagerList"></div>
+        <button class="btn btn-primary" onclick="startFinalClue()">Reveal Clue &amp; Start Timer →</button>
+      </div>`;
+    } else if (role === 'player') {
+      const locked = Object.prototype.hasOwnProperty.call(f.wagers, myId);
+      const max = Math.max(0, myScore);
+      body = locked
+        ? `<div class="card final-card center"><h3>Wager locked 🔒</h3><p>Waiting for the clue…</p></div>`
+        : `<div class="card final-card">
+            <p>Your score: <strong>$${myScore.toLocaleString()}</strong></p>
+            <label class="rv-label">Your secret wager (0 – $${max.toLocaleString()})</label>
+            <input id="fWagerInput" class="rv-input" type="number" min="0" max="${max}" value="0">
+            <button class="btn btn-primary" onclick="submitFinalWager()">Lock Wager 🔒</button>
+          </div>`;
+    } else {
+      body = `<div class="card final-card center"><h3>Final Jeopardy</h3><p>You're sitting this one out (need a positive score). Enjoy the show!</p></div>`;
+    }
+  } else if (f.stage === 'answer') {
+    let role_body = '';
+    if (role === 'host') {
+      role_body = `
+        <div class="final-answer-host">Correct response: ${escHtml(f.answer)}</div>
+        <div id="fAnsweredList"></div>
+        <button id="fRevealBtn" class="btn btn-primary hidden" onclick="beginFinalReveal()">Reveal Answers →</button>`;
+    } else if (role === 'player') {
+      role_body = `
+        <label class="rv-label">Your response</label>
+        <input id="fAnswerInput" class="rv-input" type="text" maxlength="200" placeholder="What is…?" oninput="onFinalAnswerInput()" ${f.answerClosed ? 'disabled' : ''}>
+        <div id="fTimeUp" class="final-timeup ${f.answerClosed ? '' : 'hidden'}">⏰ TIME'S UP</div>`;
+    } else {
+      role_body = `<p class="subtitle">Players are answering…</p>`;
+    }
+    body = `<div class="card final-card">
+      <div id="fClue" class="final-clue hidden">${escHtml(f.clue)}</div>
+      <div id="fCountdown" class="final-countdown"></div>
+      ${role_body}
+    </div>`;
+  } else if (f.stage === 'reveal') {
+    body = `<div class="card final-card final-reveal-card">
+      <div class="final-answer-reveal">Correct response: ${escHtml(f.answer)}</div>
+      <div id="fRevealList"></div>
+      <div id="fCrownWrap"></div>
+    </div>`;
+  }
+
+  c.innerHTML = `
+    <div class="final-header">
+      <div class="final-title">FINAL JEOPARDY</div>
+      <div id="fCategory" class="final-cat"></div>
+    </div>
+    ${body}`;
+
+  // Set initial values on freshly-built inputs (without clobbering on updates).
+  const wi = document.getElementById('fWagerInput');
+  if (wi && f.wagers[myId] != null) wi.value = f.wagers[myId];
+  const ai = document.getElementById('fAnswerInput');
+  if (ai && f.answers[myId] != null) ai.value = f.answers[myId];
+}
+
+function updateFinalView(f, role) {
+  const catEl = document.getElementById('fCategory');
+  if (catEl) catEl.textContent = f.category;
+
+  if (f.stage === 'wager' && role === 'host') {
+    const list = document.getElementById('fWagerList');
+    if (list) {
+      const done = f.eligible.filter(id => Object.prototype.hasOwnProperty.call(f.wagers, id)).length;
+      const rows = f.eligible.map(id => {
+        const p = state.players[id]; if (!p) return '';
+        const ok = Object.prototype.hasOwnProperty.call(f.wagers, id);
+        return `<div class="final-row"><span>${avatar(id, p, 24)} ${escHtml(p.name)}</span><span>${ok ? '✓ wagered' : '…'}</span></div>`;
+      }).join('');
+      list.innerHTML = `<div class="final-progress">${done} / ${f.eligible.length} wagered</div>${rows}`;
+    }
+  }
+
+  if (f.stage === 'answer' && role === 'host') {
+    const al = document.getElementById('fAnsweredList');
+    if (al) {
+      const done = f.eligible.filter(id => f.answered && f.answered[id]).length;
+      al.innerHTML = `<div class="final-progress">${done} / ${f.eligible.length} answered</div>`;
+    }
+    const rb = document.getElementById('fRevealBtn');
+    if (rb) rb.classList.toggle('hidden', !f.answerClosed);
+  }
+
+  if (f.stage === 'reveal') {
+    const order = (f.revealOrder && f.revealOrder.length) ? f.revealOrder : f.eligible;
+    const list = document.getElementById('fRevealList');
+    if (list) {
+      list.innerHTML = order.map(id => {
+        const p = state.players[id]; if (!p) return '';
+        const r = f.reveal[id] || {};
+        const ansText = (f.answers[id] && f.answers[id].trim()) ? escHtml(f.answers[id]) : '<em>(no response)</em>';
+        const ans = r.answer ? ansText : '<span class="final-hidden">— hidden —</span>';
+        const wag = r.wager ? ('$' + (f.wagers[id] || 0).toLocaleString()) : '—';
+        const jClass = r.judged === 'correct' ? 'jc' : (r.judged === 'wrong' ? 'jw' : '');
+        const result = r.judged ? `<span class="frr-result">${r.judged === 'correct' ? '✓ Correct' : '✗ Incorrect'}</span>` : '';
+        let hostBtns = '';
+        if (isHost) {
+          hostBtns = `<div class="final-revbtns">
+            <button class="btn btn-sm btn-secondary" onclick="revealFinalAnswer('${id}')" ${r.answer ? 'disabled' : ''}>Reveal Answer</button>
+            <button class="btn btn-sm btn-secondary" onclick="revealFinalWager('${id}')" ${r.wager ? 'disabled' : ''}>Reveal Wager</button>
+            <button class="award-btn award-correct" onclick="judgeFinal('${id}', true)" ${r.judged ? 'disabled' : ''}>✓</button>
+            <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)" ${r.judged ? 'disabled' : ''}>✗</button>
+          </div>`;
+        }
+        return `<div class="final-reveal-row ${jClass}">
+          <div class="frr-top"><span class="frr-name">${avatar(id, p, 28)} ${escHtml(p.name)}</span><span class="frr-score">$${p.score.toLocaleString()}</span></div>
+          <div class="frr-ans">${ans}</div>
+          <div class="frr-wager">Wager: ${wag} ${result}</div>
+          ${hostBtns}
+        </div>`;
+      }).join('');
+    }
+    const crown = document.getElementById('fCrownWrap');
+    if (crown) {
+      const allJudged = order.every(id => f.reveal[id] && f.reveal[id].judged);
+      crown.innerHTML = (isHost && allJudged)
+        ? `<button class="btn btn-primary" onclick="crownWinner()">👑 Crown the Winner</button>`
+        : '';
+    }
+  }
+}
+
+// Lightweight ticker: reveals the clue when speech starts, counts the timer
+// down, and locks the input at the deadline.
+function tickFinal() {
+  if (!state || state.phase !== 'final' || !state.final) { ensureFinalTicker(false); return; }
+  const f = state.final;
+  if (f.stage !== 'answer') { ensureFinalTicker(false); return; }
+  const now = serverNow();
+
+  const clueEl = document.getElementById('fClue');
+  if (clueEl) clueEl.classList.toggle('hidden', !(f.audioStartTime != null && now >= f.audioStartTime));
+
+  const cd = document.getElementById('fCountdown');
+  if (f.answerDeadline != null) {
+    const started = f.jingleStart != null && now >= f.jingleStart;
+    const remain = Math.max(0, f.answerDeadline - now);
+    if (cd) cd.textContent = started ? Math.ceil(remain / 1000) + 's' : '';
+    if (f.answerClosed || remain <= 0) {
+      const input = document.getElementById('fAnswerInput');
+      if (input && !input.disabled) input.disabled = true;
+      const tu = document.getElementById('fTimeUp');
+      if (tu) tu.classList.remove('hidden');
+      stopJingle();
+    }
+  }
+}
+
 // ── Host Actions ──────────────────────────────────────────────
 function submitCategories() {
   const single = Array.from(document.querySelectorAll('.single-cat')).map(i => i.value.trim()).filter(Boolean);
@@ -819,10 +1237,19 @@ function submitCategories() {
   if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category');
   const enforceEarlyPenalty = document.getElementById('enforcePenalty').checked;
   const buzzTimeoutMs = (parseInt(document.getElementById('buzzSeconds').value, 10) || 8) * 1000;
+  const finalAnswerMs = (parseInt(document.getElementById('finalSeconds').value, 10) || 30) * 1000;
+  const finalCategory = (document.getElementById('finalCat').value || '').trim();
+  const finalClue = (document.getElementById('finalClueInput').value || '').trim();
+  const finalAnswer = (document.getElementById('finalAnswerInput').value || '').trim();
+  if (finalClue && !finalAnswer) return alert('Enter the Final answer for your custom question (or clear the question to auto-generate).');
+  if (finalAnswer && !finalClue) return alert('Enter the Final question for your answer (or clear both to auto-generate).');
   socket.emit('setCategories', {
     singleCategories: single,
     doubleCategories: double,
-    settings: { enforceEarlyPenalty, buzzTimeoutMs },
+    finalCategory,
+    finalClue,
+    finalAnswer,
+    settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs },
   });
 }
 
@@ -851,6 +1278,35 @@ function submitWager(max) {
   if (wager > max) wager = max;
   socket.emit('dailyDoubleWager', { wager });
 }
+
+// ── Final Jeopardy actions ────────────────────────────────────
+function submitFinalWager() {
+  const el = document.getElementById('fWagerInput');
+  if (!el) return;
+  const max = state.players[myId] ? Math.max(0, state.players[myId].score) : 0;
+  let w = parseInt(el.value, 10);
+  if (isNaN(w) || w < 0) w = 0;
+  if (w > max) w = max;
+  socket.emit('submitFinalWager', { wager: w });
+}
+
+function onFinalAnswerInput() {
+  if (finalAnswerTimer) clearTimeout(finalAnswerTimer);
+  finalAnswerTimer = setTimeout(() => {
+    const el = document.getElementById('fAnswerInput');
+    if (el) socket.emit('submitFinalAnswer', { answer: el.value });
+  }, 300);
+}
+
+function startFinalClue() {
+  if (!confirm('Reveal the clue and start the timer? Wagers will lock.')) return;
+  socket.emit('startFinalClue');
+}
+function beginFinalReveal() { socket.emit('beginFinalReveal'); }
+function revealFinalAnswer(playerId) { socket.emit('revealFinalAnswer', { playerId }); }
+function revealFinalWager(playerId) { socket.emit('revealFinalWager', { playerId }); }
+function judgeFinal(playerId, correct) { socket.emit('judgeFinal', { playerId, correct }); }
+function crownWinner() { socket.emit('crownWinner'); }
 
 // ── Player Actions ────────────────────────────────────────────
 function buzz() {
