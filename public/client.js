@@ -95,6 +95,7 @@
 const socket = io();
 let myId = null;
 let isHost = false;
+let myName = null;            // remembered so we can re-join after a reconnect
 let state = null;
 let buzzPending = false;      // optimistic: emitted a buzz, awaiting next state
 let activeAudioKey = null;    // which question's audio we've already scheduled
@@ -477,6 +478,7 @@ function joinAsPlayer() {
   if (!name) return alert('Enter your name first');
   unlockAudio();
   isHost = false;
+  myName = name;
   socket.emit('join', { name, isHost: false });
 }
 
@@ -484,8 +486,21 @@ function joinAsHost() {
   const name = document.getElementById('playerName').value.trim() || 'Host';
   unlockAudio();
   isHost = true;
+  myName = name;
   socket.emit('join', { name, isHost: true });
 }
+
+// iOS Safari drops the WebSocket on background/lock/network blips; socket.io
+// reconnects with a NEW socket id. Re-announce ourselves so the server re-binds
+// our player entry (it reclaims by name, preserving score) — otherwise buzzes
+// from the new socket are silently dropped (no player for that id).
+socket.on('connect', () => {
+  if (myName) socket.emit('join', { name: myName, isHost });
+});
+// Server asks us to re-join (e.g. it received an action from an unknown socket).
+socket.on('rejoin', () => {
+  if (myName) socket.emit('join', { name: myName, isHost });
+});
 
 let pendingPhoto = null;
 

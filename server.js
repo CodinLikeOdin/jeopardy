@@ -627,6 +627,23 @@ io.on('connection', (socket) => {
       delete gameState.players[existingId];
       if (gameState.boardControl === existingId) gameState.boardControl = socket.id;
       if (photos[existingId]) { photos[socket.id] = photos[existingId]; delete photos[existingId]; } // carry photo across reconnect
+      // If a Final Jeopardy round is live, carry the player's slot to the new id
+      // so wagers/answers/eligibility keep working after a reconnect.
+      const f = gameState.final;
+      if (f) {
+        [f.eligible, f.revealOrder].forEach(arr => {
+          if (!arr) return;
+          const i = arr.indexOf(existingId);
+          if (i >= 0) arr[i] = socket.id;
+        });
+        ['wagers', 'answers', 'answered', 'reveal'].forEach(k => {
+          if (f[k] && Object.prototype.hasOwnProperty.call(f[k], existingId)) {
+            f[k][socket.id] = f[k][existingId];
+            delete f[k][existingId];
+          }
+        });
+        if (f.winnerId === existingId) f.winnerId = socket.id;
+      }
     } else {
       const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
       const usedColors = Object.values(gameState.players).map(p => p.color);
@@ -951,7 +968,7 @@ io.on('connection', (socket) => {
     const q = gameState.currentQuestion;
     if (!q || q.isDailyDouble || q.revealed || !gameState.buzzOpen) return;
     const player = gameState.players[socket.id];
-    if (!player) return;
+    if (!player) { socket.emit('rejoin'); return; }   // reconnected w/ a new id → re-bind
     if (q.bannedPlayers.includes(socket.id)) return;          // already answered wrong
     if (gameState.buzzers.some(b => b.id === socket.id)) return;
     if (pendingBuzzes.some(b => b.id === socket.id)) return;   // already in this window
