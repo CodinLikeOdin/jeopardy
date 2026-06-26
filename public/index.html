@@ -99,6 +99,14 @@
           <span>Final answer time (seconds)</span>
           <input type="number" id="finalSeconds" min="5" max="180" value="30" class="num-input">
         </label>
+        <label class="setting">
+          <span>Announcer voice</span>
+          <select id="voiceMode" class="num-input select-input">
+            <option value="elevenlabs">ElevenLabs (premium)</option>
+            <option value="browser">Browser (free)</option>
+            <option value="off">Off (silent)</option>
+          </select>
+        </label>
       </div>
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;justify-content:center">
         <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>

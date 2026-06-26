@@ -159,24 +159,63 @@ function retryClueAudio() {
   el.play().then(() => setAudioStatus('🔊 audio playing')).catch(() => {});
 }
 
+// Voice mode chosen by the host at setup: 'elevenlabs' | 'browser' | 'off'.
+function voiceMode() { return (state && state.settings && state.settings.voiceMode) || 'elevenlabs'; }
+
+// Free browser TTS fallback. Only the HOST device speaks (it's the announcer),
+// so phones in the room don't talk over each other. Scheduled to the synced
+// clue-start moment.
+function speakClue(text, atServerTime) {
+  if (!isHost) return;
+  if (!('speechSynthesis' in window) || !text) return;
+  const go = () => {
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.98; u.pitch = 0.9;
+      const v = pickAnnouncerVoice();
+      if (v) u.voice = v;
+      window.speechSynthesis.speak(u);
+    } catch (e) { /* ignore */ }
+  };
+  const delay = (atServerTime != null) ? atServerTime - serverNow() : 0;
+  if (delay > 30) setTimeout(go, delay); else go();
+}
+function pickAnnouncerVoice() {
+  try {
+    const vs = window.speechSynthesis.getVoices() || [];
+    return vs.find(v => /en[-_]US/i.test(v.lang) && /(male|daniel|fred|alex|aaron|arthur)/i.test(v.name))
+        || vs.find(v => /^en/i.test(v.lang)) || null;
+  } catch (e) { return null; }
+}
+function cancelSpeech() { try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch (e) {} }
+
 async function scheduleClueAudio() {
   if (!state || !state.currentQuestion || state.audioStartTime == null) return;
   const q = state.currentQuestion;
   const key = `${q.round}|${q.category}|${q.valueIndex}`;
   if (key === activeAudioKey) return;   // already scheduled for this question
   activeAudioKey = key;
+
+  const mode = voiceMode();
+  if (mode === 'off') { setAudioStatus(''); return; }            // silent (testing — no credits)
+  if (mode === 'browser') {                                      // free browser voice (host speaks)
+    setAudioStatus(isHost ? '🔊 Browser voice' : '');
+    speakClue(q.clue, state.audioStartTime);
+    return;
+  }
+
+  // Premium ElevenLabs; fall back to the browser voice if it's unavailable.
+  const fallback = () => {
+    setAudioStatus(isHost ? '🔊 Browser voice (ElevenLabs out)' : '🔇 Listen to the host');
+    speakClue(q.clue, state.audioStartTime);
+  };
   setAudioStatus('♪ loading clue audio…');
   try {
     const res = await fetch('/api/tts/current');
-    if (!res.ok) {                      // no audio (TTS failed / quota / cold start)
-      setAudioStatus(isHost ? '🎤 No audio — please read the clue aloud' : '🔇 Audio unavailable — clue is shown above');
-      return;
-    }
+    if (!res.ok) { fallback(); return; }      // no audio (quota / cold start) → browser voice
     const blob = await res.blob();
-    if (!blob || blob.size === 0) {
-      setAudioStatus(isHost ? '🎤 No audio — please read the clue aloud' : '🔇 Audio unavailable — clue is shown above');
-      return;
-    }
+    if (!blob || blob.size === 0) { fallback(); return; }
     if (clueAudioUrl) { URL.revokeObjectURL(clueAudioUrl); }
     clueAudioUrl = URL.createObjectURL(blob);
     const el = getClueAudioEl();
@@ -194,7 +233,7 @@ async function scheduleClueAudio() {
     const delayMs = state.audioStartTime - serverNow();
     if (delayMs > 30) setTimeout(go, delayMs); else go();
   } catch (e) {
-    setAudioStatus('🔇 audio error: ' + (e && e.message ? e.message : 'unknown'));
+    fallback();
   }
 }
 
@@ -355,14 +394,15 @@ function startGameOverTheme() {
   pump();
 }
 
-// Fetch the current clue audio (Final Jeopardy) and play it at a synced time.
+// Fetch the current clue audio (Final Jeopardy) and play it at a synced time;
+// if ElevenLabs has no audio, fall back to the browser voice (host).
 let finalAudioKey = null;
-async function playClueAudioAt(startTime) {
+async function playClueAudioAt(startTime, fallbackText) {
   try {
     const res = await fetch('/api/tts/current');
-    if (!res.ok) return;
+    if (!res.ok) { speakClue(fallbackText, startTime); return; }
     const blob = await res.blob();
-    if (!blob || blob.size === 0) return;
+    if (!blob || blob.size === 0) { speakClue(fallbackText, startTime); return; }
     if (clueAudioUrl) URL.revokeObjectURL(clueAudioUrl);
     clueAudioUrl = URL.createObjectURL(blob);
     const el = getClueAudioEl();
@@ -372,7 +412,7 @@ async function playClueAudioAt(startTime) {
     const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
     const delay = startTime - serverNow();
     if (delay > 30) setTimeout(go, delay); else go();
-  } catch (e) { /* clue speech is best-effort; the jingle still plays */ }
+  } catch (e) { speakClue(fallbackText, startTime); }
 }
 
 // Schedule clue speech + think-music once for the Final Jeopardy answer stage.
@@ -382,7 +422,10 @@ function scheduleFinalAudio() {
   const key = 'final|' + f.audioStartTime;
   if (key === finalAudioKey) return;
   finalAudioKey = key;
-  playClueAudioAt(f.audioStartTime);
+  const mode = voiceMode();
+  if (mode === 'browser') speakClue(f.clue, f.audioStartTime);
+  else if (mode !== 'off') playClueAudioAt(f.audioStartTime, f.clue);   // elevenlabs (+ browser fallback)
+  // (jingle always plays — it's music, not voice)
   if (f.jingleStart != null && f.jingleDurationMs) playJingle(f.jingleStart, f.jingleDurationMs);
 }
 
@@ -883,6 +926,7 @@ function renderQuestionModal() {
   if (!state.currentQuestion) {
     modal.classList.add('hidden');
     ensureModalTicker(false);
+    cancelSpeech();              // stop browser-voice read-out when the clue clears
     return;
   }
   modal.classList.remove('hidden');
@@ -1132,7 +1176,7 @@ function myFinalRole(f) {
 function renderFinal() {
   const f = state.final;
   if (!f) return;
-  if (f.stage !== 'answer') stopJingle();
+  if (f.stage !== 'answer') { stopJingle(); cancelSpeech(); }
 
   const role = myFinalRole(f);
   const wagerLocked = (f.stage === 'wager' && role === 'player')
@@ -1328,6 +1372,7 @@ function submitCategories() {
   const enforceEarlyPenalty = document.getElementById('enforcePenalty').checked;
   const buzzTimeoutMs = (parseInt(document.getElementById('buzzSeconds').value, 10) || 8) * 1000;
   const finalAnswerMs = (parseInt(document.getElementById('finalSeconds').value, 10) || 30) * 1000;
+  const voiceMode = document.getElementById('voiceMode').value || 'elevenlabs';
   const finalCategory = (document.getElementById('finalCat').value || '').trim();
   const finalClue = (document.getElementById('finalClueInput').value || '').trim();
   const finalAnswer = (document.getElementById('finalAnswerInput').value || '').trim();
@@ -1339,7 +1384,7 @@ function submitCategories() {
     finalCategory,
     finalClue,
     finalAnswer,
-    settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs },
+    settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs, voiceMode },
   });
 }
 

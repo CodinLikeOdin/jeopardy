@@ -219,7 +219,13 @@ const DEFAULT_FINAL_MS = 30000; // default Final Jeopardy answer window
 const FINAL_PAUSE_MS = 1000;    // beat between the final clue ending and the timer/music
 
 function defaultSettings() {
-  return { enforceEarlyPenalty: true, buzzTimeoutMs: DEFAULT_BUZZ_MS, finalAnswerMs: DEFAULT_FINAL_MS };
+  return { enforceEarlyPenalty: true, buzzTimeoutMs: DEFAULT_BUZZ_MS, finalAnswerMs: DEFAULT_FINAL_MS, voiceMode: 'elevenlabs' };
+}
+
+// Only the 'elevenlabs' voice mode hits the paid TTS API; 'browser' and 'off'
+// skip it (saving credits) — the client handles browser speech / silence.
+function useElevenLabs() {
+  return (gameState.settings.voiceMode || 'elevenlabs') === 'elevenlabs';
 }
 
 let gameState = {
@@ -313,7 +319,7 @@ function reopenBuzzers(windowMs) {
 // server-clock time the clue finishes (clueEnd), or null if the question
 // changed while awaiting TTS. Sets audioStartTime so clients reveal/play it.
 async function readCurrentClue(q) {
-  const buffer = await generateTTS(q.clue);
+  const buffer = useElevenLabs() ? await generateTTS(q.clue) : null;
   if (gameState.currentQuestion !== q) return null;   // replaced/cleared while awaiting
   currentAudio = buffer ? { id: 'a' + Date.now(), buffer } : null;
   const durationMs = buffer
@@ -638,6 +644,7 @@ io.on('connection', (socket) => {
         enforceEarlyPenalty: settings.enforceEarlyPenalty !== false,
         buzzTimeoutMs: Math.max(2000, Math.min(60000, Number(settings.buzzTimeoutMs) || DEFAULT_BUZZ_MS)),
         finalAnswerMs: Math.max(5000, Math.min(180000, Number(settings.finalAnswerMs) || DEFAULT_FINAL_MS)),
+        voiceMode: ['elevenlabs', 'browser', 'off'].includes(settings.voiceMode) ? settings.voiceMode : 'elevenlabs',
       };
     }
     gameState.finalCategory = (finalCategory || '').trim();
@@ -761,7 +768,7 @@ io.on('connection', (socket) => {
 
     // Read the clue aloud (synced on every device); the jingle + timer then run
     // for finalAnswerMs starting when the clue audio finishes.
-    const buffer = await generateTTS(f.clue);
+    const buffer = useElevenLabs() ? await generateTTS(f.clue) : null;
     if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
     currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
     const durationMs = buffer
