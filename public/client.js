@@ -225,12 +225,65 @@ function playWrongSound() {
   playBuzz(t + 0.36, 0.12, FREQ);
 }
 
-// ── Final Jeopardy think-music (synthesized, copyright-free) ─────────────
-// A simple looping motif scheduled against the synced clock so every device
-// plays it together. Reuses the same WebAudio context as the buzzer.
+// ── Synthesized music (think-music + game-over theme, copyright-free) ─────
+// Layered WebAudio voices scheduled against the synced clock so every device
+// plays together. Reuses the same AudioContext as the buzzer.
+const NOTE = { G4:392.0, A4:440.0, B4:493.88, C5:523.25, D5:587.33, E5:659.25,
+  F5:698.46, G5:783.99, A5:880.0, B5:987.77, C6:1046.5 };
+
+let masterGain = null;
+function getMaster() {
+  const ctx = getAudioCtx();
+  if (!masterGain) { masterGain = ctx.createGain(); masterGain.gain.value = 0.9; masterGain.connect(ctx.destination); }
+  return masterGain;
+}
+
+// One tonal voice with a short attack/decay envelope.
+function mkVoice(ctx, freq, t, dur, type, vol) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(getMaster());
+  o.start(t); o.stop(t + dur + 0.03);
+  return o;
+}
+
+// A short percussive "tick" (hi-hat / clave feel).
+function mkTick(ctx, t, freq, vol) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'square'; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+  o.connect(g); g.connect(getMaster());
+  o.start(t); o.stop(t + 0.05);
+  return o;
+}
+
+// Schedule one pass of `melody` from ctx-time `start`, layering ~5 instruments:
+// melody, an octave-down doubling for warmth, an offbeat fifth, a percussive
+// tick, and a sustained bass/pad on the downbeats. Pushes the oscillators into
+// `bank` so they can be stopped; returns the phrase length (seconds).
+function schedulePhrase(ctx, start, beat, melody, bank, end) {
+  for (let i = 0; i < melody.length; i++) {
+    const t = start + i * beat;
+    if (end != null && t >= end - 0.001) break;
+    const F = NOTE[melody[i]];
+    bank.push(mkVoice(ctx, F, t, beat * 0.92, 'triangle', 0.13));         // melody
+    bank.push(mkVoice(ctx, F / 2, t, beat * 0.92, 'sine', 0.10));         // octave-down warmth
+    if (i % 2 === 1) bank.push(mkVoice(ctx, F * 1.5, t, beat * 0.5, 'square', 0.045));  // offbeat fifth
+    bank.push(mkTick(ctx, t, i % melody.length === 0 ? 1400 : 2600, i % melody.length === 0 ? 0.09 : 0.05));
+    if (i % 4 === 0) bank.push(mkVoice(ctx, F / 2, t, beat * 4 * 0.95, 'sawtooth', 0.05));  // bass/pad
+  }
+  return melody.length * beat;
+}
+
+// ── Final Jeopardy think-music ───────────────────────────────────────────
 let jingleOscs = [];
 let jingleStopTimer = null;
-const NOTE = { B4:493.88, C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99, A5:880.0, G4:392.0, A4:440.0, C6:1046.5 };
+const JINGLE_MOTIF = ['G4','C5','E5','G5','E5','C5','D5','B4'];
+const JINGLE_BEAT = 0.34;
 
 function stopJingle() {
   jingleOscs.forEach(o => { try { o.stop(); } catch (e) {} });
@@ -238,47 +291,65 @@ function stopJingle() {
   if (jingleStopTimer) { clearTimeout(jingleStopTimer); jingleStopTimer = null; }
 }
 
-function jingleNote(ctx, freq, t, dur, type, vol) {
-  const o = ctx.createOscillator();
-  const g = ctx.createGain();
-  o.type = type || 'triangle';
-  o.frequency.value = freq;
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(vol || 0.14, t + 0.02);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g); g.connect(ctx.destination);
-  o.start(t); o.stop(t + dur + 0.03);
-  jingleOscs.push(o);
-}
-
-// Schedule the looping motif to START at the synced server time `serverStartTime`
-// and run for `durationMs` (the host-set answer window).
+// Loop the motif to fill the WHOLE answer window, starting at the synced time.
 function playJingle(serverStartTime, durationMs) {
   const ctx = getAudioCtx();
   if (ctx.state === 'suspended') ctx.resume();
   stopJingle();
   const lead = (serverStartTime - serverNow()) / 1000;
   const start = ctx.currentTime + Math.max(0.03, lead);
-  const motif = ['G4','C5','E5','G5','E5','C5','D5','B4'];   // cheerful, ticking feel
-  const beat = 0.34;
-  const totalSec = durationMs / 1000;
-  let t = start, i = 0;
-  while (t < start + totalSec - 0.001) {
-    const n = motif[i % motif.length];
-    jingleNote(ctx, NOTE[n], t, beat * 0.9, 'triangle', 0.13);
-    if (i % motif.length === 0) jingleNote(ctx, NOTE[n] / 2, t, beat * 2 * 0.9, 'sine', 0.09); // bass downbeat
-    t += beat; i++;
+  const end = start + durationMs / 1000;
+  const phraseSec = JINGLE_MOTIF.length * JINGLE_BEAT;
+  for (let t = start; t < end - 0.001; t += phraseSec) {
+    schedulePhrase(ctx, t, JINGLE_BEAT, JINGLE_MOTIF, jingleOscs, end);
   }
-  jingleStopTimer = setTimeout(stopJingle, durationMs + 250);
+  jingleStopTimer = setTimeout(stopJingle, durationMs + 300);
 }
 
 // Short triumphant flourish for the winner reveal.
 function playFanfare() {
   const ctx = getAudioCtx();
   if (ctx.state === 'suspended') ctx.resume();
-  const t = ctx.currentTime;
+  const t = ctx.currentTime + 0.02;
   [NOTE.C5, NOTE.E5, NOTE.G5, NOTE.C6].forEach((fq, i) =>
-    jingleNote(ctx, fq, t + i * 0.13, 0.32, 'square', 0.17));
+    mkVoice(ctx, fq, t + i * 0.12, 0.34, 'square', 0.18));
+}
+
+// ── Game-over theme (elaborate; loops until you leave the screen) ─────────
+let gameOverActive = false;
+let gameOverTimer = null;
+let gameOverOscs = [];
+const GO_MELODY = ['C5','E5','G5','C6','B5','G5','E5','C5','A4','C5','F5','A5','G5','E5','D5','C5'];
+const GO_BEAT = 0.40;
+
+function stopGameOverTheme() {
+  gameOverActive = false;
+  if (gameOverTimer) { clearTimeout(gameOverTimer); gameOverTimer = null; }
+  gameOverOscs.forEach(o => { try { o.stop(); } catch (e) {} });
+  gameOverOscs = [];
+}
+
+// Loop the theme indefinitely, aligned to synced server-time phrase boundaries
+// so devices stay roughly in phase. Keeps ~4s scheduled ahead, topped up each
+// second, until stopGameOverTheme() (Play Again / leaving the screen).
+function startGameOverTheme() {
+  if (gameOverActive) return;
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  gameOverActive = true;
+  const phraseMs = GO_MELODY.length * GO_BEAT * 1000;
+  let nextServer = Math.ceil(serverNow() / phraseMs) * phraseMs;
+  const pump = () => {
+    if (!gameOverActive) return;
+    while (nextServer < serverNow() + 4000) {
+      const ctxAt = ctx.currentTime + (nextServer - serverNow()) / 1000;
+      schedulePhrase(ctx, Math.max(ctx.currentTime + 0.02, ctxAt), GO_BEAT, GO_MELODY, gameOverOscs);
+      nextServer += phraseMs;
+    }
+    if (gameOverOscs.length > 400) gameOverOscs = gameOverOscs.slice(-200); // keep recent/future for stop()
+    gameOverTimer = setTimeout(pump, 1000);
+  };
+  pump();
 }
 
 // Fetch the current clue audio (Final Jeopardy) and play it at a synced time.
@@ -703,11 +774,13 @@ function render() {
   }
   if (state.phase === 'gameover') {
     renderGameOver();
+    startGameOverTheme();
   }
 
   // Tidy up Final/review transient UI state once we leave those phases.
   if (state.phase !== 'review') reviewBuilt = false;
   if (state.phase !== 'final') ensureFinalTicker(false);
+  if (state.phase !== 'gameover') stopGameOverTheme();
   if (!state.final) { finalViewSig = ''; finalAudioKey = null; stopJingle(); }
 }
 
@@ -1103,9 +1176,12 @@ function buildFinalView(f, role) {
         <div id="fAnsweredList"></div>
         <button id="fRevealBtn" class="btn btn-primary hidden" onclick="beginFinalReveal()">Reveal Answers →</button>`;
     } else if (role === 'player') {
+      // Input stays locked until the clue is finished AND the timer/music start.
+      const canType = !f.answerClosed && f.jingleStart != null && serverNow() >= f.jingleStart;
       role_body = `
         <label class="rv-label">Your response</label>
-        <input id="fAnswerInput" class="rv-input" type="text" maxlength="200" placeholder="What is…?" oninput="onFinalAnswerInput()" ${f.answerClosed ? 'disabled' : ''}>
+        <div id="fAnswerHint" class="final-hint ${canType ? 'hidden' : ''}">🔒 Listen to the clue…</div>
+        <input id="fAnswerInput" class="rv-input" type="text" maxlength="200" placeholder="What is…?" oninput="onFinalAnswerInput()" ${canType ? '' : 'disabled'}>
         <div id="fTimeUp" class="final-timeup ${f.answerClosed ? '' : 'hidden'}">⏰ TIME'S UP</div>`;
     } else {
       role_body = `<p class="subtitle">Players are answering…</p>`;
@@ -1219,9 +1295,20 @@ function tickFinal() {
     const started = f.jingleStart != null && now >= f.jingleStart;
     const remain = Math.max(0, f.answerDeadline - now);
     if (cd) cd.textContent = started ? Math.ceil(remain / 1000) + 's' : '';
-    if (f.answerClosed || remain <= 0) {
-      const input = document.getElementById('fAnswerInput');
-      if (input && !input.disabled) input.disabled = true;
+
+    const input = document.getElementById('fAnswerInput');
+    const hint = document.getElementById('fAnswerHint');
+    const closed = f.answerClosed || remain <= 0;
+
+    if (started && !closed && input && input.disabled) {
+      // Clue done + timer running → unlock the input and focus it.
+      input.disabled = false;
+      if (hint) hint.classList.add('hidden');
+      try { input.focus(); } catch (e) {}
+    }
+    if (closed) {
+      if (input) input.disabled = true;
+      if (hint) hint.classList.add('hidden');
       const tu = document.getElementById('fTimeUp');
       if (tu) tu.classList.remove('hidden');
       stopJingle();

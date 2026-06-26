@@ -807,6 +807,7 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   border-radius: 8px;
   width: 100%;
 }
+.final-hint { color: #aac4ff; font-weight: bold; text-align: center; }
 .final-progress { font-weight: bold; color: #F5A623; text-align: center; margin-bottom: 6px; }
 .final-row {
   display: flex; align-items: center; justify-content: space-between;
