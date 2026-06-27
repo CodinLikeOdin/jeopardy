@@ -383,10 +383,49 @@ function resetGame() {
   };
 }
 
+// Strip everything a contestant must not see from a state clone: clue/answer
+// text, the current clue's answer (until revealed), the pre-game final clue,
+// generation criteria, daily-double locations, and the final correct answer
+// (until the reveal). Per-player wagers/answers are refilled in broadcastState.
+function redactForPlayers(v) {
+  for (const round of ['single', 'double']) {
+    const b = v.board && v.board[round];
+    if (b) for (const k of Object.keys(b)) if (Array.isArray(b[k])) b[k] = b[k].map(() => ({}));
+  }
+  if (v.currentQuestion && !v.currentQuestion.revealed) delete v.currentQuestion.answer;
+  v.finalJeopardy = null;
+  v.criteria = { single: {}, double: {} };
+  v.dailyDoubles = [];
+  if (v.final) {
+    if (v.final.stage !== 'reveal') delete v.final.answer;
+    v.final.wagers = {};
+    v.final.answers = {};
+  }
+  return v;
+}
+
 function broadcastState() {
-  // lockUntil (per-player buzz penalty) is transient server state, but the
-  // client needs it to render each player's buzz button authoritatively.
-  io.emit('state', JSON.parse(JSON.stringify({ ...gameState, lockUntil })));
+  // The host runs the game and may see everything; contestants get a redacted
+  // view so answers can't be read out of the broadcast state.
+  const full = JSON.parse(JSON.stringify({ ...gameState, lockUntil }));
+  if (gameState.hostId) io.to(gameState.hostId).emit('state', full);
+
+  const common = redactForPlayers(JSON.parse(JSON.stringify(full)));
+  const f = gameState.final;
+
+  io.of('/').sockets.forEach((sock, sid) => {
+    if (sid === gameState.hostId) return;     // already sent the full state
+    if (!f) { sock.emit('state', common); return; }
+    // Each player additionally sees only their OWN wager/answer, plus any the
+    // host has already revealed during the spotlight.
+    const v = JSON.parse(JSON.stringify(common));
+    const w = {}, a = {};
+    Object.keys(f.wagers).forEach(id => { if (id === sid || (f.reveal[id] && f.reveal[id].wager)) w[id] = f.wagers[id]; });
+    Object.keys(f.answers).forEach(id => { if (id === sid || (f.reveal[id] && f.reveal[id].answer)) a[id] = f.answers[id]; });
+    v.final.wagers = w;
+    v.final.answers = a;
+    sock.emit('state', v);
+  });
 }
 
 // Initialize Final Jeopardy when advancing past Double Jeopardy. Eligible =
