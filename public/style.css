@@ -635,7 +635,33 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   align-items: center;
   margin-bottom: 8px;
 }
-.cat-row .cat-input { margin-bottom: 0; flex: 1; }
+.cat-row .cat-input, .cat-row .cat-name { margin-bottom: 0; flex: 1; }
+
+/* Category block: name row + criteria field */
+.cat-block { margin-bottom: 14px; }
+.cat-name {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 2px solid #444;
+  background: #0a0a2e;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: bold;
+}
+.cat-criteria {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 2px dashed #3a3a5e;
+  background: #07071f;
+  color: #cdd6ff;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+.cat-name:focus, .cat-criteria:focus { outline: none; border-color: #F5A623; }
+.setup-help { max-width: 860px; margin: 0 auto 6px; text-align: center; }
 
 .btn-reroll {
   flex-shrink: 0;
@@ -735,6 +761,28 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 
 /* Final Jeopardy: review screen (host editor) */
 .review-card { max-width: 560px; }
+.review-wide { max-width: 860px; }
+
+/* Host pre-game board review */
+.rv-round { margin-bottom: 14px; }
+.rv-round h3 { color: #F5A623; margin: 10px 0 8px; font-size: 1.1rem; }
+.rv-cat {
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: rgba(0,0,0,0.25);
+}
+.rv-cat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.rv-cat-name { font-weight: 900; color: #fff; font-size: 1.05rem; }
+.rv-clue {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.08);
+  font-size: 0.9rem; text-align: left;
+}
+.rv-clue-q { color: #dfe6ff; flex: 1; }
+.rv-clue-a { color: #2ecc71; font-weight: bold; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+.rv-dim { opacity: 0.4; }
 .rv-label {
   align-self: flex-start;
   font-size: 0.8rem;

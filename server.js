@@ -13,6 +13,10 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+// Host operator URL — serves the same SPA; the client detects the /host path
+// and runs in host mode (no host/player choice on the shared player link).
+app.get('/host', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
 const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
 
 // ── Persistent topic pool ────────────────────────────────────
@@ -244,6 +248,8 @@ let gameState = {
   boardControl: null,
   settings: defaultSettings(),
   usedSquares: { single: {}, double: {} },
+  criteria: { single: {}, double: {} },   // name -> generation criteria (for regen)
+  regenerating: {},          // "round|name" -> true while a category re-rolls in review
   finalCategory: null,       // host-chosen Final Jeopardy category ('' => AI picks)
   finalJeopardy: null,       // { category, clue, answer } — reviewed/edited before the game
   finalRegenerating: false,  // true while the host's regenerate request is in flight
@@ -368,6 +374,8 @@ function resetGame() {
     boardControl: null,
     settings: defaultSettings(),
     usedSquares: { single: {}, double: {} },
+    criteria: { single: {}, double: {} },
+    regenerating: {},
     finalCategory: null,
     finalJeopardy: null,
     finalRegenerating: false,
@@ -594,13 +602,14 @@ io.on('connection', (socket) => {
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
-    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles, finalJeopardy }) => {
+    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles, finalJeopardy, criteria }) => {
       gameState.board.single = board;
       gameState.board.double = board;
       gameState.dailyDoubles = dailyDoubles || [];
       gameState.categories = Object.keys(board);
       if (settings) gameState.settings = { ...gameState.settings, ...settings };
       if (finalJeopardy) gameState.finalJeopardy = finalJeopardy;
+      if (criteria) gameState.criteria = criteria;
       const ph = phase || 'single';
       if (ph === 'final') { startFinalRound(); return; }   // builds gameState.final
       gameState.phase = ph;
@@ -609,9 +618,14 @@ io.on('connection', (socket) => {
   }
 
   socket.on('join', ({ name, isHost }) => {
+    // The host is a pure operator — track the socket as hostId, but never add it
+    // to gameState.players (no score/photo, never shown in player lists).
     if (isHost) {
       gameState.hostId = socket.id;
       if (gameState.phase === 'lobby') gameState.phase = 'setup';
+      socket.emit('joined', { id: socket.id });
+      broadcastState();
+      return;
     }
 
     // Reconnect handling: if a player with this name already exists (e.g. their
@@ -675,18 +689,28 @@ io.on('connection', (socket) => {
       ? { category: gameState.finalCategory || 'Final Jeopardy', clue: fClue, answer: fAns }
       : null;
 
+    // Categories arrive as { criteria, name }: `criteria` is the (possibly
+    // detailed) AI query; `name` is the short label contestants see and the
+    // board key. Tolerate plain strings for backward compatibility.
+    const norm = (c) => (typeof c === 'string')
+      ? { criteria: c, name: c }
+      : { criteria: (c.criteria || c.name || '').trim(), name: (c.name || c.criteria || '').trim() };
+    const singles = (singleCategories || []).map(norm).filter(c => c.name);
+    const doubles = (doubleCategories || []).map(norm).filter(c => c.name);
+
     gameState.phase = 'generating';
-    gameState.categories = singleCategories;
+    gameState.categories = singles.map(c => c.name);
 
     const tasks = [
-      ...singleCategories.map(cat => ({ round: 'single', cat })),
-      ...doubleCategories.map(cat => ({ round: 'double', cat })),
+      ...singles.map(c => ({ round: 'single', name: c.name, criteria: c.criteria })),
+      ...doubles.map(c => ({ round: 'double', name: c.name, criteria: c.criteria })),
       { round: 'final' },
     ];
     gameState.genProgress = { done: 0, total: tasks.length };
     broadcastState();
 
     const singleBoard = {}, doubleBoard = {};
+    const singleCrit = {}, doubleCrit = {};
     let finalClue = null;
     const failures = [];
 
@@ -696,11 +720,12 @@ io.on('connection', (socket) => {
         if (t.round === 'final') {
           finalClue = manualFinal ? manualFinal : await generateFinalClue(gameState.finalCategory);
         } else {
-          const clues = await generateQuestions(t.cat);
-          (t.round === 'single' ? singleBoard : doubleBoard)[t.cat] = clues;
+          const clues = await generateQuestions(t.criteria);
+          if (t.round === 'single') { singleBoard[t.name] = clues; singleCrit[t.name] = t.criteria; }
+          else { doubleBoard[t.name] = clues; doubleCrit[t.name] = t.criteria; }
         }
       } catch (err) {
-        failures.push(t.round === 'final' ? 'Final Jeopardy' : t.cat);
+        failures.push(t.round === 'final' ? 'Final Jeopardy' : t.name);
       }
       gameState.genProgress.done++;
       broadcastState();
@@ -717,6 +742,7 @@ io.on('connection', (socket) => {
 
     gameState.board.single = singleBoard;
     gameState.board.double = doubleBoard;
+    gameState.criteria = { single: singleCrit, double: doubleCrit };
     gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
     gameState.finalJeopardy = finalClue;
     // Pause on the review screen so the host can vet/edit/regenerate the final
@@ -752,6 +778,29 @@ io.on('connection', (socket) => {
       socket.emit('error', { message: 'Could not regenerate the final clue. Try again.' });
     } finally {
       gameState.finalRegenerating = false;
+      broadcastState();
+    }
+  });
+
+  // Host re-rolls one board category's clues from its stored criteria (review only).
+  socket.on('regenerateCategory', async ({ round, name }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (round !== 'single' && round !== 'double') return;
+    const board = gameState.board[round];
+    if (!board || !(name in board)) return;
+    const criteria = (gameState.criteria[round] && gameState.criteria[round][name]) || name;
+    const key = round + '|' + name;
+    gameState.regenerating[key] = true;
+    broadcastState();
+    try {
+      const clues = await generateQuestions(criteria);
+      if (gameState.phase === 'review' && gameState.board[round] && (name in gameState.board[round])) {
+        gameState.board[round][name] = clues;
+      }
+    } catch (e) {
+      socket.emit('error', { message: `Could not regenerate "${name}". Try again.` });
+    } finally {
+      delete gameState.regenerating[key];
       broadcastState();
     }
   });
@@ -1099,6 +1148,8 @@ io.on('connection', (socket) => {
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;
     gameState.usedSquares = { single: {}, double: {} };
+    gameState.criteria = { single: {}, double: {} };
+    gameState.regenerating = {};
     gameState.categories = [];
     gameState.finalCategory = null;
     gameState.finalJeopardy = null;

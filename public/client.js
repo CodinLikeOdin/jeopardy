@@ -502,6 +502,17 @@ socket.on('rejoin', () => {
   if (myName) socket.emit('join', { name: myName, isHost });
 });
 
+// Role is decided by the URL: /host → host console; anything else → player.
+const IS_HOST_URL = /\/host\/?$/i.test(window.location.pathname);
+isHost = IS_HOST_URL;
+(function applyRoleToLanding() {
+  const ph = document.getElementById('landingPlayer');
+  const ho = document.getElementById('landingHost');
+  if (!ph || !ho) return;
+  ph.classList.toggle('hidden', IS_HOST_URL);
+  ho.classList.toggle('hidden', !IS_HOST_URL);
+})();
+
 let pendingPhoto = null;
 
 // Capture & downscale a selfie to a small center-cropped JPEG before sending.
@@ -724,7 +735,7 @@ let categoriesPreloaded = false;
 let categoryPool = [];
 
 function getUsedCategories() {
-  return Array.from(document.querySelectorAll('.cat-input'))
+  return Array.from(document.querySelectorAll('.cat-name'))
     .map(i => i.value.trim().toLowerCase())
     .filter(Boolean);
 }
@@ -736,25 +747,38 @@ function pickRandom(exclude = []) {
   return available[Math.floor(Math.random() * available.length)];
 }
 
+// The name input for a row's buttons — board blocks use .cat-name; the Final
+// Jeopardy row (single input) falls back to .cat-input.
+function rowInput(btn) {
+  const blk = btn.closest('.cat-block') || btn.closest('.cat-row');
+  return blk.querySelector('.cat-name') || blk.querySelector('.cat-input');
+}
+// If the block's criteria field is empty, mirror the name into it.
+function mirrorCriteria(btn) {
+  const blk = btn.closest('.cat-block');
+  if (!blk) return;
+  const name = blk.querySelector('.cat-name'), crit = blk.querySelector('.cat-criteria');
+  if (crit && name && !crit.value.trim()) crit.value = name.value;
+}
+
 function rerollOne(btn) {
-  const input = btn.closest('.cat-row').querySelector('.cat-input');
+  const input = rowInput(btn);
   const used = getUsedCategories().filter(c => c !== input.value.trim().toLowerCase());
   const pick = pickRandom(used);
-  if (pick) input.value = pick;
+  if (pick) { input.value = pick; mirrorCriteria(btn); }
 }
 
 function rerollAll() {
-  const singleInputs = Array.from(document.querySelectorAll('.single-cat'));
-  const doubleInputs = Array.from(document.querySelectorAll('.double-cat'));
   const used = [];
-  [...singleInputs, ...doubleInputs].forEach(input => {
+  Array.from(document.querySelectorAll('.cat-block')).forEach(blk => {
+    const name = blk.querySelector('.cat-name');
     const pick = pickRandom(used);
-    if (pick) { input.value = pick; used.push(pick.toLowerCase()); }
+    if (pick && name) {
+      name.value = pick; used.push(pick.toLowerCase());
+      const crit = blk.querySelector('.cat-criteria');
+      if (crit && !crit.value.trim()) crit.value = pick;
+    }
   });
-}
-
-function rowInput(btn) {
-  return btn.closest('.cat-row').querySelector('.cat-input');
 }
 
 async function poolAction(action, topic) {
@@ -803,10 +827,10 @@ function render() {
       .then(r => r.json())
       .then(data => {
         categoryPool = data.pool || [];
-        const singleInputs = document.querySelectorAll('.single-cat');
-        const doubleInputs = document.querySelectorAll('.double-cat');
-        data.single.forEach((cat, i) => { if (singleInputs[i]) singleInputs[i].value = cat; });
-        data.double.forEach((cat, i) => { if (doubleInputs[i]) doubleInputs[i].value = cat; });
+        const singleNames = document.querySelectorAll('.single-name');
+        const doubleNames = document.querySelectorAll('.double-name');
+        data.single.forEach((cat, i) => { if (singleNames[i]) singleNames[i].value = cat; });
+        data.double.forEach((cat, i) => { if (doubleNames[i]) doubleNames[i].value = cat; });
       });
   }
 
@@ -1098,9 +1122,13 @@ function renderReview() {
   // Host editor — built once, then we only repopulate when a regenerate lands.
   if (!reviewBuilt) {
     c.innerHTML = `
+      <div class="card review-card review-wide">
+        <h2>Review the Board</h2>
+        <p class="subtitle">Only you see this. Check each category's clues; regenerate any that came out weak.</p>
+        <div id="rvBoard"></div>
+      </div>
       <div class="card review-card">
-        <h2>Review Final Jeopardy</h2>
-        <p class="subtitle">Only you see this. Edit the wording or regenerate, then start the game.</p>
+        <h2>Final Jeopardy</h2>
         <label class="rv-label">Category</label>
         <input id="rvCategory" class="rv-input" type="text" maxlength="40" oninput="onReviewEdit()">
         <label class="rv-label">Clue (read aloud to players)</label>
@@ -1109,13 +1137,15 @@ function renderReview() {
         <input id="rvAnswer" class="rv-input" type="text" maxlength="120" oninput="onReviewEdit()">
         <div id="rvStatus" class="rv-status hidden"></div>
         <div class="rv-buttons">
-          <button id="rvRegen" class="btn btn-secondary" onclick="regenerateFinal()">⟳ Regenerate</button>
+          <button id="rvRegen" class="btn btn-secondary" onclick="regenerateFinal()">⟳ Regenerate Final</button>
           <button id="rvStart" class="btn btn-primary" onclick="beginRounds()">Start Game →</button>
         </div>
       </div>`;
     reviewBuilt = true;
     reviewLastContent = '';
   }
+
+  updateReviewBoard();   // refresh the board clues each broadcast (regenerate, etc.)
 
   // Repopulate fields from server only when content changed AND we're not typing
   // (so a regenerate refreshes them, but live edits aren't clobbered).
@@ -1142,6 +1172,34 @@ function renderReview() {
   regenBtn.disabled = regenerating;
   startBtn.disabled = regenerating;
 }
+
+// Host-only board review: each category's name + 5 clue/answer pairs, with a
+// per-category regenerate button. Re-rendered on every broadcast (no typed
+// inputs here, so rebuilding is safe).
+function updateReviewBoard() {
+  const el = document.getElementById('rvBoard');
+  if (!el) return;
+  const rounds = [['single', 'Single Jeopardy'], ['double', 'Double Jeopardy']];
+  el.innerHTML = rounds.map(([round, label]) => {
+    const board = state.board && state.board[round];
+    if (!board) return '';
+    return `<div class="rv-round"><h3>${label}</h3>` + Object.keys(board).map(name => {
+      const regen = state.regenerating && state.regenerating[round + '|' + name];
+      const clues = board[name] || [];
+      const rows = clues.map(c =>
+        `<div class="rv-clue"><span class="rv-clue-q">${escHtml(c.clue)}</span><span class="rv-clue-a">${escHtml(c.answer)}</span></div>`).join('');
+      return `<div class="rv-cat">
+        <div class="rv-cat-head">
+          <span class="rv-cat-name">${escHtml(name)}</span>
+          <button class="btn btn-sm btn-secondary" onclick="regenerateCategory('${round}','${escAttr(name)}')" ${regen ? 'disabled' : ''}>${regen ? '…regenerating' : '⟳ Regenerate'}</button>
+        </div>
+        <div class="rv-clues ${regen ? 'rv-dim' : ''}">${rows}</div>
+      </div>`;
+    }).join('') + `</div>`;
+  }).join('');
+}
+
+function regenerateCategory(round, name) { socket.emit('regenerateCategory', { round, name }); }
 
 function currentReviewFields() {
   return {
@@ -1423,11 +1481,28 @@ function tickFinal() {
 }
 
 // ── Host Actions ──────────────────────────────────────────────
+function collectCategories(blockSel) {
+  return Array.from(document.querySelectorAll(blockSel)).map(blk => {
+    const name = (blk.querySelector('.cat-name').value || '').trim();
+    let criteria = (blk.querySelector('.cat-criteria').value || '').trim();
+    if (!criteria) criteria = name;            // criteria defaults to the name
+    return { name, criteria };
+  }).filter(c => c.name);
+}
+function firstDuplicateName(list) {
+  const seen = new Set();
+  for (const c of list) { const k = c.name.toLowerCase(); if (seen.has(k)) return c.name; seen.add(k); }
+  return null;
+}
+
 function submitCategories() {
-  const single = Array.from(document.querySelectorAll('.single-cat')).map(i => i.value.trim()).filter(Boolean);
-  const double = Array.from(document.querySelectorAll('.double-cat')).map(i => i.value.trim()).filter(Boolean);
-  if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category');
-  if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category');
+  const single = collectCategories('.single-block');
+  const double = collectCategories('.double-block');
+  if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category name');
+  if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category name');
+  // Board is keyed by name, so names must be unique within a round.
+  const dup = firstDuplicateName(single) || firstDuplicateName(double);
+  if (dup) return alert(`Duplicate category name: "${dup}". Category names must be unique.`);
   const enforceEarlyPenalty = document.getElementById('enforcePenalty').checked;
   const buzzTimeoutMs = (parseInt(document.getElementById('buzzSeconds').value, 10) || 8) * 1000;
   const finalAnswerMs = (parseInt(document.getElementById('finalSeconds').value, 10) || 30) * 1000;
