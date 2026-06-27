@@ -1,11 +1,20 @@
 // ── Title Screen ─────────────────────────────────────────────
+let titleScreenDone = false;
+function dismissTitleScreen() {
+  if (titleScreenDone) return;
+  titleScreenDone = true;
+  const screen = document.getElementById('titleScreen');
+  if (!screen) return;
+  screen.classList.add('fade-out');
+  setTimeout(() => screen.remove(), 1200);
+}
+
 (function initTitleScreen() {
   const screen = document.getElementById('titleScreen');
+  if (!screen) { titleScreenDone = true; return; }
   const canvas = document.getElementById('particleCanvas');
   const ctx = canvas.getContext('2d');
-  const countdownEl = document.getElementById('titleCountdown');
-  const DURATION = 10000;
-  const start = Date.now();
+  const isHostUrl = /\/host\/?$/i.test(window.location.pathname);
 
   function resize() {
     canvas.width  = window.innerWidth;
@@ -46,13 +55,8 @@
     ctx.fill();
   }
 
-  let animId;
   function animate() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const elapsed = Date.now() - start;
-    const remaining = Math.max(0, Math.ceil((DURATION - elapsed) / 1000));
-    countdownEl.textContent = remaining > 0 ? `${remaining}s` : '';
 
     for (const p of particles) {
       p.x += p.vx;
@@ -77,19 +81,39 @@
       if (p.y < -20) Object.assign(p, spawnParticle(false));
     }
 
-    if (elapsed < DURATION) {
-      animId = requestAnimationFrame(animate);
-    }
+    if (!titleScreenDone) requestAnimationFrame(animate);
   }
   animate();
 
-  // Dismiss after DURATION
-  setTimeout(() => {
-    cancelAnimationFrame(animId);
-    screen.classList.add('fade-out');
-    setTimeout(() => screen.remove(), 1200);
-  }, DURATION);
+  // Host: brief splash, then into the console. Guests: the gate (updateTitleGate,
+  // driven by game state) controls dismissal; this is just a safety fallback so
+  // a guest is never stuck if no state ever arrives.
+  if (isHostUrl) setTimeout(dismissTitleScreen, 2600);
+  else setTimeout(dismissTitleScreen, 30000);
 })();
+
+// Guest title gate: keep the splash up (with a status message) until the host
+// has finished generating questions; if the guest arrives after they're already
+// generated, just show the splash briefly.
+let titleFirstStateDone = null;
+let titleDismissScheduled = false;
+function generationDone() {
+  return !!(state && ['review', 'single', 'double', 'final', 'gameover'].includes(state.phase));
+}
+function updateTitleGate() {
+  if (titleScreenDone || IS_HOST_URL) return;
+  const msg = document.getElementById('titleMessage');
+  if (titleFirstStateDone === null && state) titleFirstStateDone = generationDone();
+  if (!generationDone()) {
+    if (msg) msg.textContent = 'Host is generating questions…';
+    return;
+  }
+  if (msg) msg.textContent = '';
+  if (!titleDismissScheduled) {
+    titleDismissScheduled = true;
+    setTimeout(dismissTitleScreen, titleFirstStateDone ? 5000 : 700);
+  }
+}
 
 // ── Game ──────────────────────────────────────────────────────
 const socket = io();
@@ -358,6 +382,22 @@ function playFanfare() {
     mkVoice(ctx, fq, t + i * 0.12, 0.34, 'square', 0.18));
 }
 
+// ~1-second celebratory stinger when a Daily Double is revealed.
+function playDailyDoubleStinger() {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const t = ctx.currentTime + 0.02;
+  // Quick rising run...
+  [NOTE.C5, NOTE.E5, NOTE.G5, NOTE.C6].forEach((fq, i) =>
+    mkVoice(ctx, fq, t + i * 0.075, 0.16, 'square', 0.17));
+  // ...into a bright held chord with a sparkle on top.
+  const c = t + 0.30;
+  mkVoice(ctx, NOTE.C6, c, 0.62, 'triangle', 0.14);
+  mkVoice(ctx, NOTE.E5, c, 0.62, 'sawtooth', 0.10);
+  mkVoice(ctx, NOTE.G5, c, 0.62, 'sine', 0.10);
+  mkVoice(ctx, NOTE.C6 * 2, c + 0.04, 0.5, 'triangle', 0.08); // sparkle (C7)
+}
+
 // ── Game-over theme (elaborate; loops until you leave the screen) ─────────
 let gameOverActive = false;
 let gameOverTimer = null;
@@ -559,6 +599,7 @@ socket.on('joined', ({ id }) => {
 
 socket.on('state', (s) => {
   state = s;
+  updateTitleGate();     // guests wait on the title screen until questions are generated
   if (myId) render();
 });
 
@@ -975,11 +1016,12 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // New question? reset the optimistic buzz flag.
+  // New question? reset the optimistic buzz flag, and stinger a Daily Double.
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
   if (questionKey !== shownQuestionKey) {
     shownQuestionKey = questionKey;
     buzzPending = false;
+    if (q.isDailyDouble) playDailyDoubleStinger();
   }
   // Schedule synced audio on EVERY device (deduped internally per question)
   scheduleClueAudio();
@@ -1183,11 +1225,24 @@ function updateReviewBoard() {
   el.innerHTML = rounds.map(([round, label]) => {
     const board = state.board && state.board[round];
     if (!board) return '';
+    const vals = round === 'single' ? [100, 200, 300, 400, 500] : [200, 400, 600, 800, 1000];
     return `<div class="rv-round"><h3>${label}</h3>` + Object.keys(board).map(name => {
       const regen = state.regenerating && state.regenerating[round + '|' + name];
       const clues = board[name] || [];
-      const rows = clues.map(c =>
-        `<div class="rv-clue"><span class="rv-clue-q">${escHtml(c.clue)}</span><span class="rv-clue-a">${escHtml(c.answer)}</span></div>`).join('');
+      const rows = clues.map((c, i) => {
+        const up = i > 0
+          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'up')" title="Make this clue worth less">▲</button>`
+          : `<span class="rv-arrow rv-arrow-empty"></span>`;
+        const down = i < clues.length - 1
+          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more">▼</button>`
+          : `<span class="rv-arrow rv-arrow-empty"></span>`;
+        return `<div class="rv-clue">
+          <span class="rv-clue-val">$${vals[i]}</span>
+          <span class="rv-clue-q">${escHtml(c.clue)}</span>
+          <span class="rv-clue-a">${escHtml(c.answer)}</span>
+          <span class="rv-arrows">${up}${down}</span>
+        </div>`;
+      }).join('');
       return `<div class="rv-cat">
         <div class="rv-cat-head">
           <span class="rv-cat-name">${escHtml(name)}</span>
@@ -1200,6 +1255,7 @@ function updateReviewBoard() {
 }
 
 function regenerateCategory(round, name) { socket.emit('regenerateCategory', { round, name }); }
+function moveClue(round, name, index, dir) { socket.emit('moveClue', { round, name, index, dir }); }
 
 function currentReviewFields() {
   return {

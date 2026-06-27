@@ -623,21 +623,25 @@ Rules:
   throw lastErr;
 }
 
-function pickDailyDoubles(board) {
-  const cats = Object.keys(board);
+// Pick `count` daily-double squares from a board, tagged with their round.
+// Excludes the top row (valueIndex 0), like the show.
+function pickDailyDoubles(board, count, round) {
   const squares = [];
-  for (const cat of cats) {
-    for (let i = 1; i < 5; i++) squares.push({ cat, valueIndex: i });
+  for (const cat of Object.keys(board)) {
+    for (let i = 1; i < 5; i++) squares.push({ round, cat, valueIndex: i });
   }
   for (let i = squares.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [squares[i], squares[j]] = [squares[j], squares[i]];
   }
-  return squares.slice(0, 2);
+  return squares.slice(0, count);
 }
 
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
+  // Send current state immediately so a just-arrived guest can decide the
+  // title-screen gate (waiting vs. brief splash) before they join.
+  broadcastState();
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
@@ -782,7 +786,11 @@ io.on('connection', (socket) => {
     gameState.board.single = singleBoard;
     gameState.board.double = doubleBoard;
     gameState.criteria = { single: singleCrit, double: doubleCrit };
-    gameState.dailyDoubles = pickDailyDoubles(doubleBoard);
+    // One daily double in the single round, two in the double round.
+    gameState.dailyDoubles = [
+      ...pickDailyDoubles(singleBoard, 1, 'single'),
+      ...pickDailyDoubles(doubleBoard, 2, 'double'),
+    ];
     gameState.finalJeopardy = finalClue;
     // Pause on the review screen so the host can vet/edit/regenerate the final
     // clue before the game starts.
@@ -842,6 +850,20 @@ io.on('connection', (socket) => {
       delete gameState.regenerating[key];
       broadcastState();
     }
+  });
+
+  // Host reorders a clue within its category during review, swapping its point
+  // value with the neighbour (dir 'up' = lower value, 'down' = higher value).
+  socket.on('moveClue', ({ round, name, index, dir }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (round !== 'single' && round !== 'double') return;
+    const clues = gameState.board[round] && gameState.board[round][name];
+    if (!Array.isArray(clues)) return;
+    const i = Number(index);
+    const j = i + (dir === 'up' ? -1 : 1);
+    if (i < 0 || i >= clues.length || j < 0 || j >= clues.length) return;
+    [clues[i], clues[j]] = [clues[j], clues[i]];
+    broadcastState();
   });
 
   socket.on('beginRounds', () => {
@@ -1015,8 +1037,8 @@ io.on('connection', (socket) => {
     const values = round === 'single' ? [100,200,300,400,500] : [200,400,600,800,1000];
     const dollarValue = values[valueIndex];
 
-    const isDailyDouble = round === 'double' &&
-      gameState.dailyDoubles.some(dd => dd.cat === category && dd.valueIndex === valueIndex);
+    const isDailyDouble =
+      gameState.dailyDoubles.some(dd => dd.round === round && dd.cat === category && dd.valueIndex === valueIndex);
 
     clearQuestionTimeout();
     lockUntil = {};
