@@ -176,6 +176,19 @@ app.post('/api/custom', async (req, res) => {
   res.json({ category: clean, categories: list });
 });
 
+// Diagnostic: is persistent (Gist) storage actually configured on this server?
+app.get('/api/storage/diag', async (req, res) => {
+  let customCount = 0;
+  try { customCount = (await readCustom()).length; } catch (e) {}
+  res.json({
+    useGist,
+    hasGistToken: !!GIST_TOKEN,
+    hasGistId: !!GIST_ID,
+    customCount,
+    note: useGist ? 'persistent (Gist)' : 'EPHEMERAL local file — lost on every redeploy',
+  });
+});
+
 // In-memory media for custom-category questions, keyed "<catId>:<qIndex>".
 let customMedia = {}; // -> { kind:'image'|'audio', contentType, buffer }
 
