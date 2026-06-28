@@ -824,7 +824,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('setCategories', async ({ singleCategories, doubleCategories, finalCategory, finalClue: finalClueText, finalAnswer: finalAnswerText, settings }) => {
-    if (socket.id !== gameState.hostId) return;
+    // If this socket isn't (yet) recognized as the host — e.g. it reconnected
+    // with a new id — nudge it to re-join rather than silently doing nothing.
+    if (socket.id !== gameState.hostId) {
+      socket.emit('rejoin');
+      socket.emit('error', { message: 'Reconnected — please tap "Generate Questions" again.' });
+      return;
+    }
     // Apply per-game settings from the setup screen
     if (settings) {
       gameState.settings = {
@@ -858,6 +864,12 @@ io.on('connection', (socket) => {
     };
     const singles = (singleCategories || []).map(normSlot).filter(Boolean);
     const doubles = (doubleCategories || []).map(normSlot).filter(Boolean);
+
+    if (!singles.length || !doubles.length) {
+      // e.g. a chosen custom category is no longer in the store.
+      socket.emit('error', { message: 'Could not start: a selected category is missing. Re-pick categories and try again.' });
+      return;
+    }
 
     gameState.phase = 'generating';
     gameState.categories = singles.map(c => c.custom ? c.custom.name : c.name);

@@ -1585,8 +1585,10 @@ function tickFinal() {
 function collectCategories(blockSel) {
   return Array.from(document.querySelectorAll(blockSel)).map(blk => {
     if (blk.dataset.customId) return { customId: blk.dataset.customId, name: blk.dataset.customName || '' };
-    const name = (blk.querySelector('.cat-name').value || '').trim();
-    let criteria = (blk.querySelector('.cat-criteria').value || '').trim();
+    const nameEl = blk.querySelector('.cat-name');
+    const critEl = blk.querySelector('.cat-criteria');
+    const name = ((nameEl && nameEl.value) || '').trim();
+    let criteria = ((critEl && critEl.value) || '').trim();
     if (!criteria) criteria = name;            // criteria defaults to the name
     return { name, criteria };
   }).filter(c => c.customId || c.name);
@@ -1598,30 +1600,35 @@ function firstDuplicateName(list) {
 }
 
 function submitCategories() {
-  const single = collectCategories('.single-block');
-  const double = collectCategories('.double-block');
-  if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category name');
-  if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category name');
-  // Board is keyed by name, so names must be unique within a round.
-  const dup = firstDuplicateName(single) || firstDuplicateName(double);
-  if (dup) return alert(`Duplicate category name: "${dup}". Category names must be unique.`);
-  const enforceEarlyPenalty = document.getElementById('enforcePenalty').checked;
-  const buzzTimeoutMs = (parseInt(document.getElementById('buzzSeconds').value, 10) || 8) * 1000;
-  const finalAnswerMs = (parseInt(document.getElementById('finalSeconds').value, 10) || 30) * 1000;
-  const voiceMode = document.getElementById('voiceMode').value || 'elevenlabs';
-  const finalCategory = (document.getElementById('finalCat').value || '').trim();
-  const finalClue = (document.getElementById('finalClueInput').value || '').trim();
-  const finalAnswer = (document.getElementById('finalAnswerInput').value || '').trim();
-  if (finalClue && !finalAnswer) return alert('Enter the Final answer for your custom question (or clear the question to auto-generate).');
-  if (finalAnswer && !finalClue) return alert('Enter the Final question for your answer (or clear both to auto-generate).');
-  socket.emit('setCategories', {
-    singleCategories: single,
-    doubleCategories: double,
-    finalCategory,
-    finalClue,
-    finalAnswer,
-    settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs, voiceMode },
-  });
+  try {
+    const single = collectCategories('.single-block');
+    const double = collectCategories('.double-block');
+    if (single.length < 1) return alert('Enter at least 1 Single Jeopardy category name');
+    if (double.length < 1) return alert('Enter at least 1 Double Jeopardy category name');
+    // Board is keyed by name, so names must be unique within a round.
+    const dup = firstDuplicateName(single) || firstDuplicateName(double);
+    if (dup) return alert(`Duplicate category name: "${dup}". Category names must be unique.`);
+    const elVal = (id, d) => { const el = document.getElementById(id); return el ? el.value : d; };
+    const enforceEarlyPenalty = (() => { const el = document.getElementById('enforcePenalty'); return el ? el.checked : true; })();
+    const buzzTimeoutMs = (parseInt(elVal('buzzSeconds', '8'), 10) || 8) * 1000;
+    const finalAnswerMs = (parseInt(elVal('finalSeconds', '30'), 10) || 30) * 1000;
+    const voiceMode = elVal('voiceMode', 'elevenlabs') || 'elevenlabs';
+    const finalCategory = (elVal('finalCat', '') || '').trim();
+    const finalClue = (elVal('finalClueInput', '') || '').trim();
+    const finalAnswer = (elVal('finalAnswerInput', '') || '').trim();
+    if (finalClue && !finalAnswer) return alert('Enter the Final answer for your custom question (or clear the question to auto-generate).');
+    if (finalAnswer && !finalClue) return alert('Enter the Final question for your answer (or clear both to auto-generate).');
+    socket.emit('setCategories', {
+      singleCategories: single,
+      doubleCategories: double,
+      finalCategory,
+      finalClue,
+      finalAnswer,
+      settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs, voiceMode },
+    });
+  } catch (e) {
+    alert('Could not start generation: ' + (e && e.message ? e.message : e));
+  }
 }
 
 // ── Custom categories: setup-slot picker ──────────────────────
