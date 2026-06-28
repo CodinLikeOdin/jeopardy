@@ -1091,3 +1091,19 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 /* Review badges */
 .rv-media-badge { color: #F5A623; font-size: 0.75rem; font-weight: bold; margin-left: 6px; white-space: nowrap; }
 .rv-custom-tag { color: #F5A623; font-weight: bold; font-size: 0.8rem; border: 1px solid #F5A623; border-radius: 6px; padding: 2px 8px; }
+
+/* Host: always-available Start Over (floating) */
+#hostStartOver {
+  position: fixed;
+  top: 10px; right: 10px;
+  z-index: 950;
+  padding: 8px 14px;
+  border: 2px solid #F5A623;
+  border-radius: 8px;
+  background: rgba(0,0,20,0.85);
+  color: #F5A623;
+  font-weight: bold;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+#hostStartOver:hover { background: #1a1a4e; }

@@ -12,9 +12,10 @@ function dismissTitleScreen() {
 (function initTitleScreen() {
   const screen = document.getElementById('titleScreen');
   if (!screen) { titleScreenDone = true; return; }
+  const isHostUrl = /\/host\/?$/i.test(window.location.pathname);
+  if (isHostUrl) { screen.remove(); titleScreenDone = true; return; }   // host: straight to setup, no splash
   const canvas = document.getElementById('particleCanvas');
   const ctx = canvas.getContext('2d');
-  const isHostUrl = /\/host\/?$/i.test(window.location.pathname);
 
   function resize() {
     canvas.width  = window.innerWidth;
@@ -85,11 +86,9 @@ function dismissTitleScreen() {
   }
   animate();
 
-  // Host: brief splash, then into the console. Guests: the gate (updateTitleGate,
-  // driven by game state) controls dismissal; this is just a safety fallback so
-  // a guest is never stuck if no state ever arrives.
-  if (isHostUrl) setTimeout(dismissTitleScreen, 2600);
-  else setTimeout(dismissTitleScreen, 30000);
+  // Guests: the gate (updateTitleGate, driven by game state) controls dismissal;
+  // this is just a safety fallback so a guest is never stuck if no state arrives.
+  setTimeout(dismissTitleScreen, 30000);
 })();
 
 // Guest title gate: keep the splash up (with a status message) until the host
@@ -545,12 +544,27 @@ socket.on('rejoin', () => {
 // Role is decided by the URL: /host → host console; anything else → player.
 const IS_HOST_URL = /\/host\/?$/i.test(window.location.pathname);
 isHost = IS_HOST_URL;
-(function applyRoleToLanding() {
-  const ph = document.getElementById('landingPlayer');
-  const ho = document.getElementById('landingHost');
-  if (!ph || !ho) return;
-  ph.classList.toggle('hidden', IS_HOST_URL);
-  ho.classList.toggle('hidden', !IS_HOST_URL);
+(function initRole() {
+  if (IS_HOST_URL) {
+    // Host: skip the title + join button entirely — go straight to setup.
+    const landing = document.getElementById('landing');
+    if (landing) landing.classList.add('hidden');
+    myName = 'Host';
+    socket.emit('join', { name: 'Host', isHost: true });   // (re)emitted on connect too
+    // No "Enter" button to unlock audio, so unlock on the host's first gesture.
+    const unlockOnce = () => {
+      unlockAudio();
+      document.removeEventListener('pointerdown', unlockOnce);
+      document.removeEventListener('keydown', unlockOnce);
+    };
+    document.addEventListener('pointerdown', unlockOnce);
+    document.addEventListener('keydown', unlockOnce);
+  } else {
+    const ph = document.getElementById('landingPlayer');
+    const ho = document.getElementById('landingHost');
+    if (ph) ph.classList.remove('hidden');
+    if (ho) ho.classList.add('hidden');
+  }
 })();
 
 let pendingPhoto = null;
@@ -873,6 +887,10 @@ function render() {
   if (!state) return;
 
   showScreen(state.phase);
+
+  // Host always has an escape hatch back to setup once a game is underway.
+  const so = document.getElementById('hostStartOver');
+  if (so) so.classList.toggle('hidden', !(isHost && state.phase !== 'setup' && state.phase !== 'lobby'));
 
   if (state.phase === 'setup' && isHost && !categoriesPreloaded) {
     categoriesPreloaded = true;
@@ -1845,6 +1863,12 @@ function advanceRound() {
 
 function resetGame() {
   if (!confirm('Reset the game?')) return;
+  socket.emit('resetGame');
+}
+
+// Always-available host reset: clears the current game and returns to setup.
+function startOver() {
+  if (!confirm('Start over? This clears the current game and takes you back to question setup.')) return;
   socket.emit('resetGame');
 }
 
