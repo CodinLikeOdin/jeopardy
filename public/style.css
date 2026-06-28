@@ -1026,3 +1026,68 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   justify-content: flex-start;
   align-items: stretch;
 }
+
+/* ── Custom categories ─────────────────────────────────────── */
+/* Setup slot: custom-mode chip + dropdown */
+.cat-block { position: relative; }
+.btn-reroll.cat-custom-btn { color: #F5A623; }
+.btn-reroll.cat-custom-btn:hover { border-color: #F5A623; }
+.cat-chip {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 10px 12px; border-radius: 8px;
+  background: #2a1f04; border: 2px solid #F5A623; color: #F5A623; font-weight: bold;
+}
+.cat-chip-x { background: none; border: none; color: #e74c3c; font-size: 1.1rem; cursor: pointer; }
+.cat-custom-dd {
+  position: absolute; z-index: 50; left: 0; right: 0; top: 100%;
+  background: #0a0a2e; border: 2px solid #F5A623; border-radius: 8px;
+  max-height: 240px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.cat-custom-opt { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.cat-custom-opt:hover { background: #1a1a4e; }
+.cat-custom-opt small { color: #aac4ff; }
+
+/* Editor overlay */
+#customEditor {
+  position: fixed; inset: 0; z-index: 400;
+  background: rgba(0,0,12,0.92);
+  overflow-y: auto; padding: 20px;
+  display: flex; justify-content: center; align-items: flex-start;
+}
+.ce-panel {
+  background: #060CE9; border: 3px solid #F5A623; border-radius: 14px;
+  padding: 20px; width: 100%; max-width: 720px; margin: 20px 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.ce-head { display: flex; align-items: center; justify-content: space-between; }
+.ce-head h2 { color: #F5A623; }
+.ce-list { display: flex; flex-direction: column; gap: 8px; }
+.ce-listrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+  background: rgba(0,0,0,0.25);
+}
+.ce-listrow small { color: #aac4ff; }
+.ce-questions { display: flex; flex-direction: column; gap: 12px; }
+.ce-q {
+  border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;
+  padding: 10px 12px; background: rgba(0,0,0,0.25);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ce-qhead { display: flex; align-items: center; gap: 8px; font-weight: bold; color: #fff; }
+.ce-ddbadge { color: #F5A623; font-size: 0.8rem; }
+.ce-del { margin-left: auto; background: none; border: none; color: #e74c3c; font-size: 1rem; cursor: pointer; }
+.ce-media { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ce-mediaimg { max-height: 70px; border-radius: 6px; border: 1px solid #F5A623; }
+.ce-mediaaud { height: 32px; max-width: 220px; }
+.ce-missing { color: #e74c3c; font-weight: bold; font-size: 0.85rem; }
+.ce-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
+
+/* Question modal media */
+#modalMedia { width: 100%; display: flex; justify-content: center; }
+.modal-media-img { max-width: 100%; max-height: 42vh; border-radius: 8px; border: 2px solid #F5A623; }
+.modal-media-aud { width: 100%; max-width: 420px; }
+
+/* Review badges */
+.rv-media-badge { color: #F5A623; font-size: 0.75rem; font-weight: bold; margin-left: 6px; white-space: nowrap; }
+.rv-custom-tag { color: #F5A623; font-weight: bold; font-size: 0.8rem; border: 1px solid #F5A623; border-radius: 6px; padding: 2px 8px; }

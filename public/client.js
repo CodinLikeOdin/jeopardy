@@ -667,8 +667,20 @@ function tickModal() {
   // Clue text appears when the speech begins (or once revealed), but is hidden
   // during the judging screen (and reappears on a wrong answer when buzzers reopen)
   const clueEl = document.getElementById('modalClue');
-  if ((audioStarted || q.revealed) && !judging) clueEl.classList.remove('hidden');
+  const showClue = (audioStarted || q.revealed) && !judging;
+  if (showClue) clueEl.classList.remove('hidden');
   else clueEl.classList.add('hidden');
+
+  // Custom-category media reveals alongside the clue (image shows / audio plays).
+  const mediaEl = document.getElementById('modalMedia');
+  if (mediaEl) {
+    const showMedia = q.media && showClue;
+    mediaEl.classList.toggle('hidden', !showMedia);
+    if (showMedia && q.media.type === 'audio') {
+      const a = mediaEl.querySelector('audio');
+      if (a && !a.dataset.tried) { a.dataset.tried = '1'; a.play().catch(() => {}); }
+    }
+  }
 
   // "BUZZ NOW!" cue — hidden for a player who already answered wrong (they only
   // see the clue while the others get their chance)
@@ -880,6 +892,7 @@ function render() {
   }
   if (state.phase === 'setup' && isHost) {
     showScreen('setup');
+    ensureCustomButtons();
   }
   if (state.phase === 'generating') {
     showScreen('generating');
@@ -1016,12 +1029,21 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // New question? reset the optimistic buzz flag, and stinger a Daily Double.
+  // New question? reset the optimistic buzz flag, stinger a DD, set media once.
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
   if (questionKey !== shownQuestionKey) {
     shownQuestionKey = questionKey;
     buzzPending = false;
     if (q.isDailyDouble) playDailyDoubleStinger();
+    const mediaEl = document.getElementById('modalMedia');
+    if (q.media) {
+      const src = `/api/custommedia/${q.media.catId}/${q.media.qIndex}`;
+      mediaEl.innerHTML = q.media.type === 'image'
+        ? `<img class="modal-media-img" src="${src}" alt="clue image">`
+        : `<audio class="modal-media-aud" controls src="${src}"></audio>`;
+    } else {
+      mediaEl.innerHTML = '';
+    }
   }
   // Schedule synced audio on EVERY device (deduped internally per question)
   scheduleClueAudio();
@@ -1228,6 +1250,7 @@ function updateReviewBoard() {
     const vals = round === 'single' ? [100, 200, 300, 400, 500] : [200, 400, 600, 800, 1000];
     return `<div class="rv-round"><h3>${label}</h3>` + Object.keys(board).map(name => {
       const regen = state.regenerating && state.regenerating[round + '|' + name];
+      const isCustom = !!(state.customCats && state.customCats[round + '|' + name]);
       const clues = board[name] || [];
       const rows = clues.map((c, i) => {
         const up = i > 0
@@ -1236,17 +1259,21 @@ function updateReviewBoard() {
         const down = i < clues.length - 1
           ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more">▼</button>`
           : `<span class="rv-arrow rv-arrow-empty"></span>`;
+        const mediaBadge = c.media ? `<span class="rv-media-badge">★ ${c.media.type} DD</span>` : '';
         return `<div class="rv-clue">
           <span class="rv-clue-val">$${vals[i]}</span>
-          <span class="rv-clue-q">${escHtml(c.clue)}</span>
+          <span class="rv-clue-q">${escHtml(c.clue)}${mediaBadge}</span>
           <span class="rv-clue-a">${escHtml(c.answer)}</span>
           <span class="rv-arrows">${up}${down}</span>
         </div>`;
       }).join('');
+      const headBtn = isCustom
+        ? `<span class="rv-custom-tag">✎ custom</span>`
+        : `<button class="btn btn-sm btn-secondary" onclick="regenerateCategory('${round}','${escAttr(name)}')" ${regen ? 'disabled' : ''}>${regen ? '…regenerating' : '⟳ Regenerate'}</button>`;
       return `<div class="rv-cat">
         <div class="rv-cat-head">
           <span class="rv-cat-name">${escHtml(name)}</span>
-          <button class="btn btn-sm btn-secondary" onclick="regenerateCategory('${round}','${escAttr(name)}')" ${regen ? 'disabled' : ''}>${regen ? '…regenerating' : '⟳ Regenerate'}</button>
+          ${headBtn}
         </div>
         <div class="rv-clues ${regen ? 'rv-dim' : ''}">${rows}</div>
       </div>`;
@@ -1539,11 +1566,12 @@ function tickFinal() {
 // ── Host Actions ──────────────────────────────────────────────
 function collectCategories(blockSel) {
   return Array.from(document.querySelectorAll(blockSel)).map(blk => {
+    if (blk.dataset.customId) return { customId: blk.dataset.customId, name: blk.dataset.customName || '' };
     const name = (blk.querySelector('.cat-name').value || '').trim();
     let criteria = (blk.querySelector('.cat-criteria').value || '').trim();
     if (!criteria) criteria = name;            // criteria defaults to the name
     return { name, criteria };
-  }).filter(c => c.name);
+  }).filter(c => c.customId || c.name);
 }
 function firstDuplicateName(list) {
   const seen = new Set();
@@ -1576,6 +1604,230 @@ function submitCategories() {
     finalAnswer,
     settings: { enforceEarlyPenalty, buzzTimeoutMs, finalAnswerMs, voiceMode },
   });
+}
+
+// ── Custom categories: setup-slot picker ──────────────────────
+let customList = [];
+function loadCustomList() {
+  return fetch('/api/custom').then(r => r.json()).then(d => { customList = d.categories || []; return customList; }).catch(() => customList);
+}
+// Add a ★ "use custom category" button to each setup block (once).
+function ensureCustomButtons() {
+  document.querySelectorAll('.cat-block').forEach(blk => {
+    const row = blk.querySelector('.cat-row');
+    if (row && !row.querySelector('.cat-custom-btn')) {
+      const b = document.createElement('button');
+      b.className = 'btn-reroll cat-custom-btn';
+      b.title = 'Use a custom category';
+      b.textContent = '★';
+      b.onclick = () => openCustomPicker(blk);
+      row.appendChild(b);
+    }
+  });
+}
+function closeCustomPickers() { document.querySelectorAll('.cat-custom-dd').forEach(e => e.remove()); }
+function openCustomPicker(blk) {
+  const existing = blk.querySelector('.cat-custom-dd');
+  closeCustomPickers();
+  if (existing) return;                       // toggle off
+  loadCustomList().then(() => {
+    if (!customList.length) {
+      if (confirm('No custom categories yet. Open the editor to create one?')) openCustomEditor();
+      return;
+    }
+    const dd = document.createElement('div');
+    dd.className = 'cat-custom-dd';
+    dd.innerHTML = customList.map(c =>
+      `<div class="cat-custom-opt" data-id="${c.id}">★ ${escHtml(c.name)} <small>(${c.questions.length})</small></div>`).join('');
+    dd.querySelectorAll('.cat-custom-opt').forEach(opt =>
+      opt.onclick = () => { applyCustomToBlock(blk, opt.dataset.id); closeCustomPickers(); });
+    blk.appendChild(dd);
+  });
+}
+function applyCustomToBlock(blk, id) {
+  const cat = customList.find(c => c.id === id);
+  if (!cat) return;
+  blk.dataset.customId = cat.id;
+  blk.dataset.customName = cat.name;
+  blk.querySelector('.cat-row').style.display = 'none';
+  const crit = blk.querySelector('.cat-criteria'); if (crit) crit.style.display = 'none';
+  let chip = blk.querySelector('.cat-chip');
+  if (!chip) { chip = document.createElement('div'); chip.className = 'cat-chip'; blk.appendChild(chip); }
+  chip.innerHTML = `★ ${escHtml(cat.name)} <button class="cat-chip-x" title="Use AI instead">✕</button>`;
+  chip.querySelector('.cat-chip-x').onclick = () => clearCustomFromBlock(blk);
+}
+function clearCustomFromBlock(blk) {
+  delete blk.dataset.customId; delete blk.dataset.customName;
+  const chip = blk.querySelector('.cat-chip'); if (chip) chip.remove();
+  blk.querySelector('.cat-row').style.display = '';
+  const crit = blk.querySelector('.cat-criteria'); if (crit) crit.style.display = '';
+}
+
+// ── Custom category editor ────────────────────────────────────
+let editingCat = null;   // { id?, name, questions: [{clue, answer, media, _dataUrl, _missing}] }
+function blankQ() { return { clue: '', answer: '', media: null, _dataUrl: null }; }
+
+function openCustomEditor() {
+  loadCustomList().then(() => { editingCat = null; renderCustomEditor(); document.getElementById('customEditor').classList.remove('hidden'); });
+}
+function closeCustomEditor() { document.getElementById('customEditor').classList.add('hidden'); editingCat = null; }
+function backToCustomList() { editingCat = null; renderCustomEditor(); }
+function newCustomCat() { editingCat = { name: '', questions: [blankQ(), blankQ(), blankQ(), blankQ(), blankQ()] }; renderCustomEditor(); }
+
+function editCustomCat(id) {
+  const cat = customList.find(c => c.id === id);
+  if (!cat) return;
+  editingCat = { id: cat.id, name: cat.name, questions: cat.questions.map(q => ({
+    clue: q.clue, answer: q.answer, media: q.media ? { type: q.media.type, name: q.media.name } : null, _dataUrl: null,
+  })) };
+  renderCustomEditor();
+  // Pull existing media binaries back so re-saving keeps indexes aligned.
+  editingCat.questions.forEach((q, i) => {
+    if (!q.media) return;
+    fetch(`/api/custommedia/${cat.id}/${i}`)
+      .then(r => r.ok ? r.blob() : Promise.reject())
+      .then(blobToDataUrl).then(url => { q._dataUrl = url; q._missing = false; renderCustomEditor(); })
+      .catch(() => { q._missing = true; renderCustomEditor(); });
+  });
+}
+function blobToDataUrl(blob) { return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); }
+
+function syncEditorFromDom() {
+  if (!editingCat) return;
+  const nameEl = document.getElementById('ceName');
+  if (nameEl) editingCat.name = nameEl.value;
+  editingCat.questions.forEach((q, i) => {
+    const ce = document.getElementById('ceClue' + i), ae = document.getElementById('ceAns' + i);
+    if (ce) q.clue = ce.value;
+    if (ae) q.answer = ae.value;
+  });
+}
+function addCustomQ() { syncEditorFromDom(); editingCat.questions.push(blankQ()); renderCustomEditor(); }
+function removeCustomQ(i) { syncEditorFromDom(); editingCat.questions.splice(i, 1); renderCustomEditor(); }
+function clearMedia(i) { syncEditorFromDom(); const q = editingCat.questions[i]; q.media = null; q._dataUrl = null; q._missing = false; renderCustomEditor(); }
+
+function attachMedia(i, type) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = type === 'image' ? 'image/*' : 'audio/*';
+  input.onchange = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (type === 'image') downscaleImageToDataUrl(file, (url) => setMedia(i, 'image', file.name, url));
+    else { const r = new FileReader(); r.onload = () => setMedia(i, 'audio', file.name, r.result); r.readAsDataURL(file); }
+  };
+  input.click();
+}
+function setMedia(i, type, name, dataUrl) {
+  syncEditorFromDom();
+  const q = editingCat.questions[i];
+  q.media = { type, name }; q._dataUrl = dataUrl; q._missing = false;
+  renderCustomEditor();
+}
+function downscaleImageToDataUrl(file, cb) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 800;
+      const s = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s));
+      const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      cb(canvas.toDataURL('image/jpeg', 0.8));
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderCustomEditor() {
+  const el = document.getElementById('customEditor');
+  if (!el) return;
+  if (!editingCat) {
+    const items = customList.length ? customList.map(c =>
+      `<div class="ce-listrow"><span>${escHtml(c.name)} <small>(${c.questions.length} Qs${c.questions.some(q => q.media) ? ', media' : ''})</small></span>
+        <span><button class="btn btn-sm btn-secondary" onclick="editCustomCat('${c.id}')">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteCustomCat('${c.id}','${escAttr(c.name)}')">Delete</button></span></div>`).join('')
+      : '<p class="subtitle">No custom categories yet — create one below.</p>';
+    el.innerHTML = `<div class="ce-panel">
+      <div class="ce-head"><h2>Custom Categories</h2><button class="btn btn-sm btn-secondary" onclick="closeCustomEditor()">✕ Close</button></div>
+      <div class="ce-list">${items}</div>
+      <button class="btn btn-primary" onclick="newCustomCat()">+ New Category</button>
+    </div>`;
+    return;
+  }
+  const rows = editingCat.questions.map((q, i) => {
+    let preview = '';
+    if (q.media) {
+      const src = q._dataUrl || ('/api/custommedia/' + (editingCat.id || '') + '/' + i);
+      if (q._missing) preview = `<span class="ce-missing">⚠ media missing — re-attach</span>`;
+      else if (q.media.type === 'image') preview = `<img class="ce-mediaimg" src="${src}">`;
+      else preview = `<audio class="ce-mediaaud" controls src="${src}"></audio>`;
+    }
+    return `<div class="ce-q">
+      <div class="ce-qhead">Question ${i + 1}${q.media ? ' <span class="ce-ddbadge">★ media Daily Double</span>' : ''}
+        <button class="ce-del" onclick="removeCustomQ(${i})" title="Remove question">🗑</button></div>
+      <textarea id="ceClue${i}" class="rv-input rv-area" rows="2" placeholder="Clue (a statement)">${escHtml(q.clue)}</textarea>
+      <input id="ceAns${i}" class="rv-input" type="text" placeholder="Answer (What is …?)" value="${escHtml(q.answer)}">
+      <div class="ce-media">
+        <button class="btn btn-sm btn-secondary" onclick="attachMedia(${i},'image')">🖼 Image</button>
+        <button class="btn btn-sm btn-secondary" onclick="attachMedia(${i},'audio')">🔊 Audio</button>
+        ${q.media ? `<button class="btn btn-sm btn-danger" onclick="clearMedia(${i})">Remove media</button>` : ''}
+        ${preview}
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="ce-panel">
+    <div class="ce-head"><h2>${editingCat.id ? 'Edit' : 'New'} Custom Category</h2><button class="btn btn-sm btn-secondary" onclick="backToCustomList()">‹ Back</button></div>
+    <label class="rv-label">Category name</label>
+    <input id="ceName" class="rv-input" type="text" maxlength="60" value="${escHtml(editingCat.name)}" placeholder="e.g. Movie Quotes">
+    <div class="ce-questions">${rows}</div>
+    <div class="ce-actions">
+      <button class="btn btn-secondary" onclick="addCustomQ()">+ Add another question</button>
+      <button class="btn btn-primary" onclick="saveCustomCat()">💾 Save Category</button>
+    </div>
+    <p class="subtitle">Attaching an image or audio clip makes that question this category's Daily Double. Need at least 5 complete questions.</p>
+  </div>`;
+}
+
+function saveCustomCat() {
+  syncEditorFromDom();
+  const name = (editingCat.name || '').trim();
+  if (!name) return alert('Enter a category name.');
+  const qs = editingCat.questions.filter(q => (q.clue || '').trim() && (q.answer || '').trim());
+  if (qs.length < 5) return alert('A custom category needs at least 5 complete questions (clue + answer).');
+  const payload = { category: { id: editingCat.id, name, questions: qs.map(q => ({
+    clue: q.clue.trim(), answer: q.answer.trim(), media: q.media ? { type: q.media.type, name: q.media.name } : null,
+  })) } };
+  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    .then(r => r.json())
+    .then(async (res) => {
+      if (res.error) { alert('Save failed: ' + res.error); return; }
+      const saved = res.category;
+      // Upload media binaries for questions that have one loaded, keyed by final index.
+      for (let idx = 0; idx < qs.length; idx++) {
+        if (!qs[idx]._dataUrl) continue;
+        await new Promise((resolve) => {
+          socket.emit('uploadCustomMedia', { catId: saved.id, qIndex: idx, dataUrl: qs[idx]._dataUrl }, (ack) => {
+            if (ack && ack.tooBig) alert(`Media for question ${idx + 1} is too large and was not saved.`);
+            resolve();
+          });
+          setTimeout(resolve, 8000);
+        });
+      }
+      customList = res.categories || customList;
+      editingCat = null;
+      renderCustomEditor();
+      alert('Custom category saved!');
+    })
+    .catch(() => alert('Save failed.'));
+}
+
+function deleteCustomCat(id, name) {
+  if (!confirm(`Delete custom category "${name}"?`)) return;
+  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) })
+    .then(r => r.json()).then(res => { customList = res.categories || []; renderCustomEditor(); }).catch(() => alert('Delete failed.'));
 }
 
 function selectSquare(round, category, valueIndex) {

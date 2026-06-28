@@ -108,6 +108,85 @@ app.post('/api/categories/pool', async (req, res) => {
   res.json({ pool });
 });
 
+// ── Custom categories (host-authored questions, with optional media DDs) ─────
+// Question TEXT persists in the Gist (or a local file fallback); media binaries
+// live only in memory (customMedia) and are re-uploaded each session.
+const CUSTOM_FILENAME = 'jeopardy-custom.json';
+const CUSTOM_PATH = path.join(__dirname, 'custom-categories.json');
+
+async function readGistFile(filename) {
+  if (!useGist) return null;
+  try {
+    const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json' },
+    });
+    if (r.ok) { const g = await r.json(); const f = g.files && g.files[filename]; if (f && f.content) return JSON.parse(f.content); }
+    else console.error('Gist read failed:', r.status);
+  } catch (e) { console.error('Gist read error:', e.message); }
+  return null;
+}
+async function writeGistFile(filename, data) {
+  const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: { [filename]: { content: JSON.stringify(data, null, 2) } } }),
+  });
+  if (!r.ok) throw new Error('gist write failed: ' + r.status);
+}
+async function readCustom() {
+  if (useGist) { const d = await readGistFile(CUSTOM_FILENAME); if (Array.isArray(d)) return d; }
+  try { return JSON.parse(fs.readFileSync(CUSTOM_PATH, 'utf8')); } catch (e) { return []; }
+}
+async function writeCustom(list) {
+  if (useGist) { await writeGistFile(CUSTOM_FILENAME, list); return; }
+  fs.writeFileSync(CUSTOM_PATH, JSON.stringify(list, null, 2) + '\n');
+}
+
+app.get('/api/custom', async (req, res) => {
+  res.json({ categories: await readCustom() });
+});
+
+// Upsert or delete a custom category. body: { category } | { action:'delete', id }
+app.post('/api/custom', async (req, res) => {
+  const body = req.body || {};
+  let list = await readCustom();
+  if (body.action === 'delete') {
+    list = list.filter(c => c.id !== body.id);
+    try { await writeCustom(list); } catch (e) { return res.status(500).json({ error: e.message }); }
+    return res.json({ categories: list });
+  }
+  const cat = body.category;
+  if (!cat || !cat.name || !Array.isArray(cat.questions)) return res.status(400).json({ error: 'bad category' });
+  const clean = {
+    id: (typeof cat.id === 'string' && /^cc_/.test(cat.id)) ? cat.id
+      : ('cc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
+    name: String(cat.name).trim().slice(0, 60),
+    questions: cat.questions.slice(0, 30).map(q => ({
+      clue: String(q.clue || '').trim().slice(0, 500),
+      answer: String(q.answer || '').trim().slice(0, 300),
+      media: (q.media && (q.media.type === 'image' || q.media.type === 'audio'))
+        ? { type: q.media.type, name: String(q.media.name || '').slice(0, 120) } : null,
+    })).filter(q => q.clue && q.answer),
+  };
+  if (!clean.name) return res.status(400).json({ error: 'category needs a name' });
+  if (clean.questions.length < 5) return res.status(400).json({ error: 'a custom category needs at least 5 complete questions' });
+  const i = list.findIndex(c => c.id === clean.id);
+  if (i >= 0) list[i] = clean; else list.push(clean);
+  try { await writeCustom(list); } catch (e) { return res.status(500).json({ error: 'could not save: ' + e.message }); }
+  res.json({ category: clean, categories: list });
+});
+
+// In-memory media for custom-category questions, keyed "<catId>:<qIndex>".
+let customMedia = {}; // -> { kind:'image'|'audio', contentType, buffer }
+
+app.get('/api/custommedia/:catId/:qIndex', (req, res) => {
+  const m = customMedia[req.params.catId + ':' + req.params.qIndex];
+  if (!m) return res.status(404).end();
+  res.setHeader('Content-Type', m.contentType);
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.send(m.buffer);
+});
+
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
 
 const TTS_TIMEOUT_MS = 15000;   // per-attempt cap (generous for Render cold starts)
@@ -249,6 +328,7 @@ let gameState = {
   settings: defaultSettings(),
   usedSquares: { single: {}, double: {} },
   criteria: { single: {}, double: {} },   // name -> generation criteria (for regen)
+  customCats: {},            // "round|name" -> true for host-authored custom categories
   regenerating: {},          // "round|name" -> true while a category re-rolls in review
   finalCategory: null,       // host-chosen Final Jeopardy category ('' => AI picks)
   finalJeopardy: null,       // { category, clue, answer } — reviewed/edited before the game
@@ -375,6 +455,7 @@ function resetGame() {
     settings: defaultSettings(),
     usedSquares: { single: {}, double: {} },
     criteria: { single: {}, double: {} },
+    customCats: {},
     regenerating: {},
     finalCategory: null,
     finalJeopardy: null,
@@ -625,16 +706,47 @@ Rules:
 
 // Pick `count` daily-double squares from a board, tagged with their round.
 // Excludes the top row (valueIndex 0), like the show.
-function pickDailyDoubles(board, count, round) {
+function pickDailyDoubles(board, count, round, exclude) {
   const squares = [];
   for (const cat of Object.keys(board)) {
-    for (let i = 1; i < 5; i++) squares.push({ round, cat, valueIndex: i });
+    for (let i = 1; i < 5; i++) {
+      if (exclude && exclude.has(cat + '|' + i)) continue;   // already a (media) DD
+      squares.push({ round, cat, valueIndex: i });
+    }
   }
   for (let i = squares.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [squares[i], squares[j]] = [squares[j], squares[i]];
   }
   return squares.slice(0, count);
+}
+
+// Fisher-Yates shuffle (returns a new array).
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Build a board category (5 clues) from a saved custom category. Always include
+// media questions (they're the daily doubles), then fill randomly to 5. Returns
+// { clues, mediaSlots } where mediaSlots are the value indexes carrying media.
+function buildCustomCategory(cat) {
+  const withIdx = cat.questions.map((q, idx) => ({ q, idx }));
+  const mediaQs = withIdx.filter(x => x.q && x.q.media);
+  const rest = shuffled(withIdx.filter(x => !(x.q && x.q.media)));
+  const chosen = [...mediaQs, ...rest].slice(0, 5);
+  const clues = chosen.map(({ q, idx }) => ({
+    clue: q.clue,
+    answer: q.answer,
+    media: q.media ? { type: q.media.type, catId: cat.id, qIndex: idx } : undefined,
+  }));
+  const mediaSlots = [];
+  clues.forEach((c, slot) => { if (c.media) mediaSlots.push(slot); });
+  return { clues, mediaSlots };
 }
 
 io.on('connection', (socket) => {
@@ -732,40 +844,44 @@ io.on('connection', (socket) => {
       ? { category: gameState.finalCategory || 'Final Jeopardy', clue: fClue, answer: fAns }
       : null;
 
-    // Categories arrive as { criteria, name }: `criteria` is the (possibly
-    // detailed) AI query; `name` is the short label contestants see and the
-    // board key. Tolerate plain strings for backward compatibility.
-    const norm = (c) => (typeof c === 'string')
-      ? { criteria: c, name: c }
-      : { criteria: (c.criteria || c.name || '').trim(), name: (c.name || c.criteria || '').trim() };
-    const singles = (singleCategories || []).map(norm).filter(c => c.name);
-    const doubles = (doubleCategories || []).map(norm).filter(c => c.name);
+    // Each slot is either an AI category { criteria, name } or a saved custom
+    // category { customId }. Load custom categories up front.
+    const customList = await readCustom();
+    const normSlot = (c) => {
+      if (c && typeof c === 'object' && c.customId) {
+        const cat = customList.find(x => x.id === c.customId);
+        return cat ? { custom: cat } : null;
+      }
+      if (typeof c === 'string') return { criteria: c, name: c };
+      const name = (c.name || c.criteria || '').trim();
+      return name ? { criteria: (c.criteria || c.name || '').trim(), name } : null;
+    };
+    const singles = (singleCategories || []).map(normSlot).filter(Boolean);
+    const doubles = (doubleCategories || []).map(normSlot).filter(Boolean);
 
     gameState.phase = 'generating';
-    gameState.categories = singles.map(c => c.name);
+    gameState.categories = singles.map(c => c.custom ? c.custom.name : c.name);
 
+    // Only AI categories need generation; custom ones are placed instantly.
     const tasks = [
-      ...singles.map(c => ({ round: 'single', name: c.name, criteria: c.criteria })),
-      ...doubles.map(c => ({ round: 'double', name: c.name, criteria: c.criteria })),
+      ...singles.filter(c => !c.custom).map(c => ({ round: 'single', name: c.name, criteria: c.criteria })),
+      ...doubles.filter(c => !c.custom).map(c => ({ round: 'double', name: c.name, criteria: c.criteria })),
       { round: 'final' },
     ];
     gameState.genProgress = { done: 0, total: tasks.length };
     broadcastState();
 
-    const singleBoard = {}, doubleBoard = {};
-    const singleCrit = {}, doubleCrit = {};
+    const aiSingle = {}, aiDouble = {};
     let finalClue = null;
     const failures = [];
 
-    // All categories (plus the Final Jeopardy clue) generate concurrently.
     await runWithConcurrency(tasks, 6, async (t) => {
       try {
         if (t.round === 'final') {
           finalClue = manualFinal ? manualFinal : await generateFinalClue(gameState.finalCategory);
         } else {
           const clues = await generateQuestions(t.criteria);
-          if (t.round === 'single') { singleBoard[t.name] = clues; singleCrit[t.name] = t.criteria; }
-          else { doubleBoard[t.name] = clues; doubleCrit[t.name] = t.criteria; }
+          (t.round === 'single' ? aiSingle : aiDouble)[t.name] = clues;
         }
       } catch (err) {
         failures.push(t.round === 'final' ? 'Final Jeopardy' : t.name);
@@ -783,13 +899,40 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Assemble each round's board in slot order (custom + AI), tracking custom
+    // categories and the media squares that become daily doubles.
+    const singleBoard = {}, doubleBoard = {};
+    const singleCrit = {}, doubleCrit = {};
+    const customCats = {};
+    const mediaDDs = [];
+    const assemble = (slots, round, board, crit, aiMap) => {
+      slots.forEach(c => {
+        if (c.custom) {
+          const built = buildCustomCategory(c.custom);
+          board[c.custom.name] = built.clues;
+          customCats[round + '|' + c.custom.name] = true;
+          built.mediaSlots.forEach(vi => mediaDDs.push({ round, cat: c.custom.name, valueIndex: vi }));
+        } else {
+          board[c.name] = aiMap[c.name];
+          crit[c.name] = c.criteria;
+        }
+      });
+    };
+    assemble(singles, 'single', singleBoard, singleCrit, aiSingle);
+    assemble(doubles, 'double', doubleBoard, doubleCrit, aiDouble);
+
     gameState.board.single = singleBoard;
     gameState.board.double = doubleBoard;
     gameState.criteria = { single: singleCrit, double: doubleCrit };
-    // One daily double in the single round, two in the double round.
+    gameState.customCats = customCats;
+    // Media questions are daily doubles; add the standard random DDs among the
+    // remaining (non-media) squares.
+    const exSingle = new Set(mediaDDs.filter(d => d.round === 'single').map(d => d.cat + '|' + d.valueIndex));
+    const exDouble = new Set(mediaDDs.filter(d => d.round === 'double').map(d => d.cat + '|' + d.valueIndex));
     gameState.dailyDoubles = [
-      ...pickDailyDoubles(singleBoard, 1, 'single'),
-      ...pickDailyDoubles(doubleBoard, 2, 'double'),
+      ...mediaDDs,
+      ...pickDailyDoubles(singleBoard, 1, 'single', exSingle),
+      ...pickDailyDoubles(doubleBoard, 2, 'double', exDouble),
     ];
     gameState.finalJeopardy = finalClue;
     // Pause on the review screen so the host can vet/edit/regenerate the final
@@ -833,6 +976,7 @@ io.on('connection', (socket) => {
   socket.on('regenerateCategory', async ({ round, name }) => {
     if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
     if (round !== 'single' && round !== 'double') return;
+    if (gameState.customCats[round + '|' + name]) return;   // custom categories aren't AI-regenerated
     const board = gameState.board[round];
     if (!board || !(name in board)) return;
     const criteria = (gameState.criteria[round] && gameState.criteria[round][name]) || name;
@@ -1022,6 +1166,21 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Host uploads media for a custom-category question (image/audio data URL).
+  socket.on('uploadCustomMedia', ({ catId, qIndex, dataUrl }, ack) => {
+    if (socket.id !== gameState.hostId) return;
+    if (typeof catId !== 'string' || typeof dataUrl !== 'string') return;
+    const m = dataUrl.match(/^data:(image\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/);
+    if (!m) { if (typeof ack === 'function') ack({ ok: false }); return; }
+    const contentType = m[1];
+    const kind = contentType.startsWith('image/') ? 'image' : 'audio';
+    const buf = Buffer.from(m[2], 'base64');
+    const cap = kind === 'image' ? 600000 : 4000000; // ~600KB image, ~4MB audio
+    if (buf.length === 0 || buf.length > cap) { if (typeof ack === 'function') ack({ ok: false, tooBig: buf.length > cap }); return; }
+    customMedia[String(catId) + ':' + String(qIndex)] = { kind, contentType, buffer: buf };
+    if (typeof ack === 'function') ack({ ok: true });
+  });
+
   // Clock sync: client measures round-trip and estimates its offset from server time
   socket.on('syncPing', (t0) => {
     socket.emit('syncPong', { t0, serverTime: Date.now() });
@@ -1046,7 +1205,7 @@ io.on('connection', (socket) => {
     gameState.usedSquares[round][key] = true;
     gameState.currentQuestion = {
       round, category, valueIndex, dollarValue,
-      clue: clue.clue, answer: clue.answer, isDailyDouble,
+      clue: clue.clue, answer: clue.answer, media: clue.media || null, isDailyDouble,
       bannedPlayers: [],
     };
     gameState.buzzers = [];
@@ -1210,6 +1369,7 @@ io.on('connection', (socket) => {
     gameState.boardControl = null;
     gameState.usedSquares = { single: {}, double: {} };
     gameState.criteria = { single: {}, double: {} };
+    gameState.customCats = {};
     gameState.regenerating = {};
     gameState.categories = [];
     gameState.finalCategory = null;

@@ -1,2 +1,4 @@
 node_modules/
 .env
+custom-categories.json
+.DS_Store
