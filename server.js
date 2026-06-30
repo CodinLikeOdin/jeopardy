@@ -832,11 +832,11 @@ Rules:
   throw lastErr;
 }
 
-// Generate a CACHEABLE bank of ~20 clues for a category, spread across 5
+// Generate a CACHEABLE bank of ~30 clues for a category, spread across 5
 // difficulty tiers (perTier each). Returns [{clue, answer, difficulty:1..5}].
 // Leaking clues are dropped; we keep the cleanest attempt and require every
 // tier represented plus a healthy total, so drawBoardClues can always fill 5.
-async function generateQuestionBank(category, perTier = 4) {
+async function generateQuestionBank(category, perTier = 6) {
   const prompt = `You are writing a large bank of Jeopardy! clues for the category "${category}".
 
 Write ${perTier} clues at EACH of 5 difficulty tiers (tier 1 = easiest/most accessible, tier 5 = hardest), for ${perTier * 5} clues total. In Jeopardy! the host READS a clue (a statement) and players respond with a QUESTION ("What is...?").
@@ -861,8 +861,8 @@ Rules:
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const resp = await client.messages.create(
-        { model: 'claude-sonnet-4-6', max_tokens: 3500, messages: [{ role: 'user', content: prompt }] },
-        { timeout: 60000, maxRetries: 1 }
+        { model: 'claude-sonnet-4-6', max_tokens: 5000, messages: [{ role: 'user', content: prompt }] },
+        { timeout: 90000, maxRetries: 1 }
       );
       const raw = JSON.parse(extractJSON(resp.content[0].text.trim())).clues;
       if (!Array.isArray(raw)) throw new Error('unexpected bank shape');
@@ -873,7 +873,7 @@ Rules:
       const tiers = new Set(clean.map(q => q.difficulty));
       const score = clean.length + tiers.size * 100;   // prefer full tier coverage, then volume
       if (score > bestScore) { best = clean; bestScore = score; }
-      if (clean.length >= 15 && tiers.size === 5) return clean;
+      if (clean.length >= Math.round(perTier * 5 * 0.7) && tiers.size === 5) return clean;
       throw new Error(`bank too thin (${clean.length} clues, ${tiers.size}/5 tiers)`);
     } catch (err) {
       lastErr = err;
