@@ -1313,39 +1313,56 @@ function renderReview() {
   startBtn.disabled = regenerating;
 }
 
-// Host-only board review: each category's name + 5 clue/answer pairs, with a
-// per-category regenerate button. Re-rendered on every broadcast (no typed
-// inputs here, so rebuilding is safe).
+// Host-only board review: each category's name + 5 editable clue/answer pairs,
+// with per-clue regenerate + per-category regenerate. The clue/answer fields are
+// live inputs, so we skip rebuilding while the host is actively typing in one
+// (otherwise a broadcast would clobber the caret). Regenerate landings still
+// repaint once focus leaves the field / sits on a button.
 function updateReviewBoard() {
   const el = document.getElementById('rvBoard');
   if (!el) return;
+  const ae = document.activeElement;
+  if (ae && el.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
   const rounds = [['single', 'Single Jeopardy'], ['double', 'Double Jeopardy']];
   el.innerHTML = rounds.map(([round, label]) => {
     const board = state.board && state.board[round];
     if (!board) return '';
     const vals = round === 'single' ? [100, 200, 300, 400, 500] : [200, 400, 600, 800, 1000];
     return `<div class="rv-round"><h3>${label}</h3>` + Object.keys(board).map(name => {
-      const regen = state.regenerating && state.regenerating[round + '|' + name];
+      const regen = !!(state.regenerating && state.regenerating[round + '|' + name]);
       const isCustom = !!(state.customCats && state.customCats[round + '|' + name]);
       const clues = board[name] || [];
       const rows = clues.map((c, i) => {
+        const regenOne = !!(state.regeneratingClues && state.regeneratingClues[round + '|' + name + '|' + i]);
+        const busy = regen || regenOne;
+        const dis = busy ? 'disabled' : '';
         const up = i > 0
-          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'up')" title="Make this clue worth less">▲</button>`
+          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'up')" title="Make this clue worth less" ${dis}>▲</button>`
           : `<span class="rv-arrow rv-arrow-empty"></span>`;
         const down = i < clues.length - 1
-          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more">▼</button>`
+          ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more" ${dis}>▼</button>`
           : `<span class="rv-arrow rv-arrow-empty"></span>`;
         const mediaBadge = c.media ? `<span class="rv-media-badge">★ ${c.media.type} DD</span>` : '';
-        return `<div class="rv-clue">
+        // Single-clue regenerate: AI categories only, and not a media daily double.
+        const regenBtn = (!isCustom && !c.media)
+          ? `<button class="rv-regen-one" onclick="regenerateClue('${round}','${escAttr(name)}',${i})" title="Regenerate just this clue" ${dis}>${regenOne ? '…' : '⟳'}</button>`
+          : `<span class="rv-regen-one rv-regen-empty"></span>`;
+        return `<div class="rv-clue ${regenOne ? 'rv-dim' : ''}">
           <span class="rv-clue-val">$${vals[i]}</span>
-          <span class="rv-clue-q">${escHtml(c.clue)}${mediaBadge}</span>
-          <span class="rv-clue-a">${escHtml(c.answer)}</span>
+          <div class="rv-clue-fields" data-round="${round}" data-name="${escHtml(name)}" data-index="${i}">
+            <textarea class="rv-clue-edit rv-clue-q-edit" rows="2" maxlength="600"
+              placeholder="Clue" oninput="onClueEdit(this)" onblur="onClueBlur(this)" ${dis}>${escHtml(c.clue || '')}</textarea>
+            ${mediaBadge}
+            <input class="rv-clue-edit rv-clue-a-edit" type="text" maxlength="200"
+              placeholder="Answer" value="${escHtml(c.answer || '')}" oninput="onClueEdit(this)" onblur="onClueBlur(this)" ${dis}>
+          </div>
           <span class="rv-arrows">${up}${down}</span>
+          ${regenBtn}
         </div>`;
       }).join('');
       const headBtn = isCustom
         ? `<span class="rv-custom-tag">✎ custom</span>`
-        : `<button class="btn btn-sm btn-secondary" onclick="regenerateCategory('${round}','${escAttr(name)}')" ${regen ? 'disabled' : ''}>${regen ? '…regenerating' : '⟳ Regenerate'}</button>`;
+        : `<button class="btn btn-sm btn-secondary" onclick="regenerateCategory('${round}','${escAttr(name)}')" ${regen ? 'disabled' : ''}>${regen ? '…regenerating' : '⟳ Regenerate all'}</button>`;
       return `<div class="rv-cat">
         <div class="rv-cat-head">
           <span class="rv-cat-name">${escHtml(name)}</span>
@@ -1359,6 +1376,41 @@ function updateReviewBoard() {
 
 function regenerateCategory(round, name) { socket.emit('regenerateCategory', { round, name }); }
 function moveClue(round, name, index, dir) { socket.emit('moveClue', { round, name, index, dir }); }
+
+// ── Per-clue editing (debounced) ─────────────────────────────
+// The host can retype any clue/answer; we debounce-emit `editClue`, and flush
+// immediately on blur or before a regenerate so nothing is lost.
+let clueEditTimer = null, clueEditEl = null;
+function clueFieldsPayload(fieldEl) {
+  const wrap = fieldEl.closest('.rv-clue-fields');
+  if (!wrap) return null;
+  const q = wrap.querySelector('.rv-clue-q-edit');
+  const a = wrap.querySelector('.rv-clue-a-edit');
+  return {
+    round: wrap.dataset.round,
+    name: wrap.dataset.name,
+    index: Number(wrap.dataset.index),
+    clue: q ? q.value : '',
+    answer: a ? a.value : '',
+  };
+}
+function onClueEdit(fieldEl) {
+  clueEditEl = fieldEl;
+  if (clueEditTimer) clearTimeout(clueEditTimer);
+  clueEditTimer = setTimeout(flushClueEdit, 500);
+}
+function flushClueEdit() {
+  if (clueEditTimer) { clearTimeout(clueEditTimer); clueEditTimer = null; }
+  if (!clueEditEl) return;
+  const payload = clueFieldsPayload(clueEditEl);
+  clueEditEl = null;
+  if (payload) socket.emit('editClue', payload);
+}
+function onClueBlur() { flushClueEdit(); }
+function regenerateClue(round, name, index) {
+  flushClueEdit();   // persist any pending text edit before re-rolling this clue
+  socket.emit('regenerateClue', { round, name, index });
+}
 
 function currentReviewFields() {
   return {

@@ -343,6 +343,7 @@ let gameState = {
   criteria: { single: {}, double: {} },   // name -> generation criteria (for regen)
   customCats: {},            // "round|name" -> true for host-authored custom categories
   regenerating: {},          // "round|name" -> true while a category re-rolls in review
+  regeneratingClues: {},     // "round|name|index" -> true while a single clue re-rolls in review
   finalCategory: null,       // host-chosen Final Jeopardy category ('' => AI picks)
   finalJeopardy: null,       // { category, clue, answer } — reviewed/edited before the game
   finalRegenerating: false,  // true while the host's regenerate request is in flight
@@ -470,6 +471,7 @@ function resetGame() {
     criteria: { single: {}, double: {} },
     customCats: {},
     regenerating: {},
+    regeneratingClues: {},
     finalCategory: null,
     finalJeopardy: null,
     finalRegenerating: false,
@@ -662,6 +664,59 @@ Rules:
     }
   }
   // Out of retries: return the cleanest attempt we got, else fail the category.
+  if (best) return best;
+  throw lastErr;
+}
+
+// Regenerate ONE board clue for a category, at the difficulty of its slot
+// (index 0 = easiest .. 4 = hardest), avoiding the other clues already in the
+// category. Returns { clue, answer }. Same self-verifying / leak-check retries.
+async function generateSingleClue(category, index, others) {
+  const i = Math.max(0, Math.min(4, Number(index) || 0));
+  const difficulty = ['the easiest, most accessible', 'easy', 'medium', 'hard', 'the hardest'][i];
+  const avoid = (others || [])
+    .filter(c => c && c.clue)
+    .map(c => `- ${c.clue}  (answer: ${c.answer})`)
+    .join('\n');
+  const prompt = `You are rewriting ONE clue for a category in a game of Jeopardy!: "${category}".
+
+This is clue ${i + 1} of 5, which should be ${difficulty} of the five (clue 1 is easiest, clue 5 is hardest). In Jeopardy! the host READS a clue (a statement) and players respond with a QUESTION ("What is...?").
+
+ACCURACY IS CRITICAL: state only facts you are highly confident are true. Mentally fact-check the clue and fix anything uncertain before answering. Avoid obscure stats, exact dates, or records you might misremember.
+
+NEVER GIVE AWAY THE ANSWER: the answer must NOT appear anywhere in the clue, and the clue must not simply restate the category name.
+
+Write a FRESH clue that does NOT duplicate any of these existing clues already in this category:
+${avoid || '(none)'}
+
+Return ONLY valid JSON, no other text:
+{"clue":"...","answer":"What is ...?"}
+
+Rules:
+- the clue is a statement/description, NOT a question
+- the answer is phrased "What is X?" or "Who is X?"
+- the answer (and the category name) must never appear in the clue text
+- concise and unambiguous`;
+
+  let lastErr, best = null, bestLeaks = Infinity;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const resp = await client.messages.create(
+        { model: 'claude-sonnet-4-6', max_tokens: 300, messages: [{ role: 'user', content: prompt }] },
+        { timeout: 45000, maxRetries: 1 }
+      );
+      const obj = JSON.parse(extractJSON(resp.content[0].text.trim()));
+      if (!obj || typeof obj.clue !== 'string' || typeof obj.answer !== 'string') throw new Error('unexpected clue shape');
+      const one = { clue: obj.clue, answer: obj.answer };
+      const leaks = clueLeaks(one.clue, one.answer, category) ? 1 : 0;
+      if (leaks < bestLeaks) { best = one; bestLeaks = leaks; }
+      if (leaks === 0) return one;
+      throw new Error('answer leaked into the clue');
+    } catch (err) {
+      lastErr = err;
+      console.error(`regenerate one clue "${category}" #${i} attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
   if (best) return best;
   throw lastErr;
 }
@@ -1035,6 +1090,51 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Host edits a single clue's wording and/or answer during review. The clue's
+  // media (custom daily double) and any other props are preserved.
+  socket.on('editClue', ({ round, name, index, clue, answer }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (round !== 'single' && round !== 'double') return;
+    const clues = gameState.board[round] && gameState.board[round][name];
+    if (!Array.isArray(clues)) return;
+    const i = Number(index);
+    if (i < 0 || i >= clues.length || !clues[i]) return;
+    if (typeof clue === 'string') clues[i].clue = clue.slice(0, 600);
+    if (typeof answer === 'string') clues[i].answer = answer.slice(0, 200);
+    broadcastState();
+  });
+
+  // Host regenerates just ONE clue (at its difficulty slot) based on the
+  // category's criteria. Custom-category and media clues are not AI-generated.
+  socket.on('regenerateClue', async ({ round, name, index }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (round !== 'single' && round !== 'double') return;
+    if (gameState.customCats[round + '|' + name]) return;
+    const board = gameState.board[round];
+    if (!board || !(name in board)) return;
+    const clues = board[name];
+    const i = Number(index);
+    if (!Array.isArray(clues) || i < 0 || i >= clues.length || !clues[i]) return;
+    if (clues[i].media) return;   // don't regenerate a media daily double
+    const criteria = (gameState.criteria[round] && gameState.criteria[round][name]) || name;
+    const key = round + '|' + name + '|' + i;
+    gameState.regeneratingClues[key] = true;
+    broadcastState();
+    try {
+      const others = clues.filter((_, idx) => idx !== i);
+      const fresh = await generateSingleClue(criteria, i, others);
+      const cur = gameState.board[round] && gameState.board[round][name];
+      if (gameState.phase === 'review' && Array.isArray(cur) && cur[i]) {
+        cur[i] = { ...cur[i], clue: fresh.clue, answer: fresh.answer };
+      }
+    } catch (e) {
+      socket.emit('error', { message: `Could not regenerate that clue. Try again.` });
+    } finally {
+      delete gameState.regeneratingClues[key];
+      broadcastState();
+    }
+  });
+
   socket.on('beginRounds', () => {
     if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
     gameState.phase = 'single';
@@ -1396,6 +1496,7 @@ io.on('connection', (socket) => {
     gameState.criteria = { single: {}, double: {} };
     gameState.customCats = {};
     gameState.regenerating = {};
+    gameState.regeneratingClues = {};
     gameState.categories = [];
     gameState.finalCategory = null;
     gameState.finalJeopardy = null;
