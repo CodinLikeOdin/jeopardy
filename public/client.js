@@ -837,6 +837,7 @@ function rerollOne(btn) {
   const used = getUsedCategories().filter(c => c !== input.value.trim().toLowerCase());
   const pick = pickRandom(used);
   if (pick) { input.value = pick; syncCriteria(btn.closest('.cat-block'), oldName, pick); }
+  refreshCriteriaIndicators();
 }
 
 function rerollAll() {
@@ -850,6 +851,44 @@ function rerollAll() {
       name.value = pick; used.push(pick.toLowerCase());
       syncCriteria(blk, oldName, pick);
     }
+  });
+  refreshCriteriaIndicators();
+}
+
+// Flag any category whose Question criteria differs from its displayed name, so
+// the host can see at a glance that it'll generate from the criteria, not the name.
+let setupIndicatorsWired = false;
+function ensureSetupIndicators() {
+  document.querySelectorAll('.cat-block').forEach(blk => {
+    if (!blk.querySelector('.cat-crit-note')) {
+      const note = document.createElement('div');
+      note.className = 'cat-crit-note hidden';
+      note.textContent = '✎ generates from this criteria, not the name';
+      blk.appendChild(note);
+    }
+  });
+  if (!setupIndicatorsWired) {
+    setupIndicatorsWired = true;
+    const setup = document.getElementById('setup');
+    if (setup) setup.addEventListener('input', refreshCriteriaIndicators);
+  }
+  refreshCriteriaIndicators();
+}
+function refreshCriteriaIndicators() {
+  document.querySelectorAll('.cat-block').forEach(blk => {
+    const note = blk.querySelector('.cat-crit-note');
+    const nameEl = blk.querySelector('.cat-name');
+    const critEl = blk.querySelector('.cat-criteria');
+    if (blk.dataset.customId || !nameEl || !critEl) {
+      blk.classList.remove('cat-mismatch');
+      if (note) note.classList.add('hidden');
+      return;
+    }
+    const name = nameEl.value.trim().toLowerCase();
+    const crit = critEl.value.trim().toLowerCase();
+    const diff = !!crit && crit !== name;
+    blk.classList.toggle('cat-mismatch', diff);
+    if (note) note.classList.toggle('hidden', !diff);
   });
 }
 
@@ -907,6 +946,7 @@ function render() {
         const doubleNames = document.querySelectorAll('.double-name');
         data.single.forEach((cat, i) => { if (singleNames[i]) singleNames[i].value = cat; });
         data.double.forEach((cat, i) => { if (doubleNames[i]) doubleNames[i].value = cat; });
+        refreshCriteriaIndicators();
       });
     // Warn the host if persistent storage isn't configured (custom categories /
     // pool edits would be lost on every redeploy).
@@ -928,6 +968,7 @@ function render() {
   if (state.phase === 'setup' && isHost) {
     showScreen('setup');
     ensureCustomButtons();
+    ensureSetupIndicators();
   }
   if (state.phase === 'generating') {
     showScreen('generating');
@@ -1697,12 +1738,14 @@ function applyCustomToBlock(blk, id) {
   if (!chip) { chip = document.createElement('div'); chip.className = 'cat-chip'; blk.appendChild(chip); }
   chip.innerHTML = `★ ${escHtml(cat.name)} <button class="cat-chip-x" title="Use AI instead">✕</button>`;
   chip.querySelector('.cat-chip-x').onclick = () => clearCustomFromBlock(blk);
+  refreshCriteriaIndicators();
 }
 function clearCustomFromBlock(blk) {
   delete blk.dataset.customId; delete blk.dataset.customName;
   const chip = blk.querySelector('.cat-chip'); if (chip) chip.remove();
   blk.querySelector('.cat-row').style.display = '';
   const crit = blk.querySelector('.cat-criteria'); if (crit) crit.style.display = '';
+  refreshCriteriaIndicators();
 }
 
 // ── Custom category editor ────────────────────────────────────

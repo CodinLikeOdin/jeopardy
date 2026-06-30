@@ -1123,3 +1123,7 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   text-align: center;
 }
 #storageWarn strong { color: #fff; }
+
+/* Setup: highlight a category whose criteria differs from its name */
+.cat-mismatch .cat-criteria { border-color: #F5A623; border-style: solid; background: #1a1405; color: #ffe9b0; }
+.cat-crit-note { color: #F5A623; font-size: 0.72rem; font-weight: bold; margin-top: 3px; }
