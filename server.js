@@ -273,6 +273,25 @@ function drawBoardClues(bank) {
   return out;
 }
 
+// Pull ONE replacement clue from a bank at (or near) a difficulty tier, skipping
+// any clue/answer already in `excludeTexts` (normalized) — used by the host's
+// per-clue regenerate so it swaps in an unused cached clue, no API call.
+function drawReplacementClue(bank, tierIndex, excludeTexts) {
+  const qs = (bank && bank.questions) || [];
+  if (!qs.length) return null;
+  const byTier = [[], [], [], [], []];
+  qs.forEach(q => { const d = Math.max(1, Math.min(5, Number(q.difficulty) || 3)); byTier[d - 1].push(q); });
+  const tier = Math.max(0, Math.min(4, Number(tierIndex) || 0));
+  const order = [tier];
+  for (let off = 1; off < 5; off++) { if (tier - off >= 0) order.push(tier - off); if (tier + off < 5) order.push(tier + off); }
+  const blocked = excludeTexts || new Set();
+  for (const t of order) {
+    const avail = byTier[t].filter(q => !blocked.has(normalizeText(q.clue)) && !blocked.has(normalizeText(q.answer)));
+    if (avail.length) { const q = avail[Math.floor(Math.random() * avail.length)]; return { clue: q.clue, answer: q.answer }; }
+  }
+  return null;
+}
+
 // Cache-first: draw 5 clues for a topic. On a cache miss, generate a full bank
 // (so the NEXT game is token-free too), draw from it, and return it for saving.
 // Returns { clues, fresh } where fresh is { topic, bank } when newly generated.
@@ -1270,10 +1289,19 @@ io.on('connection', (socket) => {
     gameState.regenerating[key] = true;
     broadcastState();
     try {
-      const clues = await generateQuestions(criteria);
+      // Re-draw a fresh 5-clue board from the cached bank (no API call). Only if
+      // the topic has no bank yet do we generate one (and cache it for next time).
+      const bank = await getBank(criteria);
+      let clues = bank && drawBoardClues(bank);
+      let fresh = null;
+      if (!clues) {
+        const r = await getQuestionsForTopic(criteria);
+        clues = r.clues; fresh = r.fresh;
+      }
       if (gameState.phase === 'review' && gameState.board[round] && (name in gameState.board[round])) {
         gameState.board[round][name] = clues;
       }
+      if (fresh) saveBanks([fresh]).catch(e => console.error('bank persist failed:', e.message));
     } catch (e) {
       socket.emit('error', { message: `Could not regenerate "${name}". Try again.` });
     } finally {
@@ -1327,8 +1355,14 @@ io.on('connection', (socket) => {
     gameState.regeneratingClues[key] = true;
     broadcastState();
     try {
-      const others = clues.filter((_, idx) => idx !== i);
-      const fresh = await generateSingleClue(criteria, i, others);
+      // Swap in an unused clue from the cached bank at this slot's difficulty
+      // tier (no API call). Generate a single fresh clue only if there's no bank
+      // or the bank has nothing left that isn't already on the board.
+      const exclude = new Set();
+      clues.forEach(c => { if (c && c.clue) exclude.add(normalizeText(c.clue)); if (c && c.answer) exclude.add(normalizeText(c.answer)); });
+      const bank = await getBank(criteria);
+      let fresh = bank && drawReplacementClue(bank, i, exclude);
+      if (!fresh) fresh = await generateSingleClue(criteria, i, clues.filter((_, idx) => idx !== i));
       const cur = gameState.board[round] && gameState.board[round][name];
       if (gameState.phase === 'review' && Array.isArray(cur) && cur[i]) {
         cur[i] = { ...cur[i], clue: fresh.clue, answer: fresh.answer };
