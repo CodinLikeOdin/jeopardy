@@ -1107,3 +1107,19 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   cursor: pointer;
 }
 #hostStartOver:hover { background: #1a1a4e; }
+
+/* Host setup: ephemeral-storage warning banner */
+#storageWarn {
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto 12px;
+  padding: 10px 14px;
+  border: 2px solid #e74c3c;
+  border-radius: 8px;
+  background: rgba(192,57,43,0.18);
+  color: #ffd9d4;
+  font-size: 0.85rem;
+  font-weight: bold;
+  text-align: center;
+}
+#storageWarn strong { color: #fff; }

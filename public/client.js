@@ -820,30 +820,35 @@ function rowInput(btn) {
   const blk = btn.closest('.cat-block') || btn.closest('.cat-row');
   return blk.querySelector('.cat-name') || blk.querySelector('.cat-input');
 }
-// If the block's criteria field is empty, mirror the name into it.
-function mirrorCriteria(btn) {
-  const blk = btn.closest('.cat-block');
+// Keep the criteria field in step with the name on reroll. If criteria was
+// empty or just auto-mirrored the PREVIOUS name (not custom-typed), follow the
+// new name. If the host typed their own criteria, leave it alone.
+function syncCriteria(blk, oldName, newName) {
   if (!blk) return;
-  const name = blk.querySelector('.cat-name'), crit = blk.querySelector('.cat-criteria');
-  if (crit && name && !crit.value.trim()) crit.value = name.value;
+  const crit = blk.querySelector('.cat-criteria');
+  if (!crit) return;
+  const cur = crit.value.trim();
+  if (!cur || cur === (oldName || '').trim()) crit.value = newName;
 }
 
 function rerollOne(btn) {
   const input = rowInput(btn);
+  const oldName = input.value;
   const used = getUsedCategories().filter(c => c !== input.value.trim().toLowerCase());
   const pick = pickRandom(used);
-  if (pick) { input.value = pick; mirrorCriteria(btn); }
+  if (pick) { input.value = pick; syncCriteria(btn.closest('.cat-block'), oldName, pick); }
 }
 
 function rerollAll() {
   const used = [];
   Array.from(document.querySelectorAll('.cat-block')).forEach(blk => {
     const name = blk.querySelector('.cat-name');
+    if (!name) return;
+    const oldName = name.value;
     const pick = pickRandom(used);
-    if (pick && name) {
+    if (pick) {
       name.value = pick; used.push(pick.toLowerCase());
-      const crit = blk.querySelector('.cat-criteria');
-      if (crit && !crit.value.trim()) crit.value = pick;
+      syncCriteria(blk, oldName, pick);
     }
   });
 }
@@ -903,6 +908,18 @@ function render() {
         data.single.forEach((cat, i) => { if (singleNames[i]) singleNames[i].value = cat; });
         data.double.forEach((cat, i) => { if (doubleNames[i]) doubleNames[i].value = cat; });
       });
+    // Warn the host if persistent storage isn't configured (custom categories /
+    // pool edits would be lost on every redeploy).
+    fetch('/api/storage/diag').then(r => r.json()).then(d => {
+      const w = document.getElementById('storageWarn');
+      if (!w) return;
+      if (d && d.useGist === false) {
+        w.innerHTML = '⚠ Persistent storage is OFF — custom categories and saved topics will be lost on the next redeploy. Set <strong>GIST_TOKEN</strong> and <strong>GIST_ID</strong> on the Render service to fix.';
+        w.classList.remove('hidden');
+      } else {
+        w.classList.add('hidden');
+      }
+    }).catch(() => {});
   }
 
   if (state.phase === 'lobby' || state.phase === 'setup' || state.phase === 'generating') {
