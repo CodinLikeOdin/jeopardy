@@ -942,22 +942,34 @@ async function refreshWarmStatus() {
   } catch (e) { el.classList.add('hidden'); }
 }
 
-// Pre-generate question banks for every pooled topic that lacks one.
-async function warmPool() {
-  const btn = document.getElementById('warmPoolBtn');
+// Pre-generate question banks. force=false fills only topics without a bank;
+// force=true regenerates every pooled topic (e.g. to upgrade older banks).
+async function warmPool(force) {
+  if (force && !confirm('Regenerate questions for ALL pooled topics? This spends Anthropic tokens for every topic and overwrites their cached banks.')) return;
+  const warmBtn = document.getElementById('warmPoolBtn');
+  const refreshBtn = document.getElementById('refreshPoolBtn');
   const el = document.getElementById('warmPoolStatus');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Pre-generating…'; }
-  if (el) { el.classList.remove('hidden'); el.textContent = 'Generating question banks — this can take a minute for many topics…'; }
+  [warmBtn, refreshBtn].forEach(b => { if (b) b.disabled = true; });
+  const active = force ? refreshBtn : warmBtn;
+  if (active) active.textContent = force ? '⏳ Refreshing…' : '⏳ Pre-generating…';
+  if (el) { el.classList.remove('hidden'); el.textContent = (force ? 'Regenerating all banks' : 'Generating question banks') + ' — this can take a while for many topics…'; }
   try {
-    const res = await fetch('/api/pool/warm', { method: 'POST' });
+    const res = await fetch('/api/pool/warm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: !!force }),
+    });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'failed');
     const failedNote = d.failed && d.failed.length ? ` (${d.failed.length} failed: ${d.failed.join(', ')})` : '';
-    if (el) el.textContent = `✅ Done — generated ${d.generated} new, ${d.alreadyCached} already cached of ${d.total} topics${failedNote}.`;
+    if (el) el.textContent = d.force
+      ? `✅ Refreshed — regenerated ${d.generated} of ${d.total} topics${failedNote}.`
+      : `✅ Done — generated ${d.generated} new, ${d.alreadyCached} already cached of ${d.total} topics${failedNote}.`;
   } catch (e) {
-    if (el) el.textContent = '⚠️ Could not pre-generate: ' + (e.message || 'error') + '. (Anthropic key/quota?)';
+    if (el) el.textContent = '⚠️ Could not generate: ' + (e.message || 'error') + '. (Anthropic key/quota?)';
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '⚡ Pre-generate Pool'; }
+    if (warmBtn) { warmBtn.disabled = false; warmBtn.textContent = '⚡ Pre-generate Pool'; }
+    if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '♻️ Refresh All Banks'; }
     refreshWarmStatus();
   }
 }

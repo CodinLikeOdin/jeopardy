@@ -134,20 +134,22 @@ app.get('/api/pool/status', async (req, res) => {
   }
 });
 
-// Pre-generate question banks for every pooled topic that doesn't have one yet,
-// so future games of those topics cost no Anthropic tokens. One-time-ish admin
-// action; it can take a while for many topics. Returns a summary.
+// Pre-generate question banks for pooled topics so future games cost no
+// Anthropic tokens. By default only fills topics that lack a bank; with
+// { force:true } it regenerates EVERY pooled topic (e.g. to upgrade older,
+// smaller banks). One-time-ish admin action; can take a while. Returns a summary.
 let warming = false;
 app.post('/api/pool/warm', async (req, res) => {
   if (warming) return res.status(409).json({ error: 'already pre-generating — please wait' });
   warming = true;
+  const force = !!(req.body && req.body.force);
   try {
     const pool = await readPool();
-    const missing = [];
-    for (const t of pool) if (!(await getBank(t))) missing.push(t);
+    const targets = [];
+    for (const t of pool) if (force || !(await getBank(t))) targets.push(t);
 
     const fresh = [], failed = [];
-    await runWithConcurrency(missing, 4, async (t) => {
+    await runWithConcurrency(targets, 4, async (t) => {
       try {
         const bank = { questions: await generateQuestionBank(t), generatedAt: Date.now() };
         if (drawBoardClues(bank)) fresh.push({ topic: t, bank });
@@ -155,7 +157,7 @@ app.post('/api/pool/warm', async (req, res) => {
       } catch (e) { failed.push(t); }
     });
     if (fresh.length) await saveBanks(fresh);
-    res.json({ total: pool.length, alreadyCached: pool.length - missing.length, generated: fresh.length, failed });
+    res.json({ total: pool.length, alreadyCached: pool.length - targets.length, generated: fresh.length, failed, force });
   } catch (e) {
     res.status(500).json({ error: e.message });
   } finally {
