@@ -139,14 +139,17 @@ app.get('/api/pool/status', async (req, res) => {
 // { force:true } it regenerates EVERY pooled topic (e.g. to upgrade older,
 // smaller banks). One-time-ish admin action; can take a while. Returns a summary.
 let warming = false;
+let warmProgress = { active: false, done: 0, total: 0, force: false };
 app.post('/api/pool/warm', async (req, res) => {
   if (warming) return res.status(409).json({ error: 'already pre-generating — please wait' });
   warming = true;
   const force = !!(req.body && req.body.force);
+  warmProgress = { active: true, done: 0, total: 0, force };
   try {
     const pool = await readPool();
     const targets = [];
     for (const t of pool) if (force || !(await getBank(t))) targets.push(t);
+    warmProgress.total = targets.length;
 
     const fresh = [], failed = [];
     await runWithConcurrency(targets, 4, async (t) => {
@@ -155,6 +158,7 @@ app.post('/api/pool/warm', async (req, res) => {
         if (drawBoardClues(bank)) fresh.push({ topic: t, bank });
         else failed.push(t);
       } catch (e) { failed.push(t); }
+      warmProgress.done++;
     });
     if (fresh.length) await saveBanks(fresh);
     res.json({ total: pool.length, alreadyCached: pool.length - targets.length, generated: fresh.length, failed, force });
@@ -162,8 +166,12 @@ app.post('/api/pool/warm', async (req, res) => {
     res.status(500).json({ error: e.message });
   } finally {
     warming = false;
+    warmProgress.active = false;
   }
 });
+
+// Live progress for an in-flight warm/refresh run, so the UI can show "N / M".
+app.get('/api/pool/warm/progress', (req, res) => res.json(warmProgress));
 
 // ── Custom categories (host-authored questions, with optional media DDs) ─────
 // Question TEXT persists in the Gist (or a local file fallback); media binaries

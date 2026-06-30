@@ -952,7 +952,17 @@ async function warmPool(force) {
   [warmBtn, refreshBtn].forEach(b => { if (b) b.disabled = true; });
   const active = force ? refreshBtn : warmBtn;
   if (active) active.textContent = force ? '⏳ Refreshing…' : '⏳ Pre-generating…';
-  if (el) { el.classList.remove('hidden'); el.textContent = (force ? 'Regenerating all banks' : 'Generating question banks') + ' — this can take a while for many topics…'; }
+  const verb = force ? 'Regenerating all banks' : 'Generating question banks';
+  if (el) { el.classList.remove('hidden'); el.textContent = verb + ' — this can take a while for many topics…'; }
+
+  // Poll live progress so the host sees "N / M done" instead of just a spinner.
+  const poll = setInterval(async () => {
+    try {
+      const p = await (await fetch('/api/pool/warm/progress')).json();
+      if (el && p && p.active && p.total) el.textContent = `${verb} — ${p.done} / ${p.total} done…`;
+    } catch (e) {}
+  }, 1500);
+
   try {
     const res = await fetch('/api/pool/warm', {
       method: 'POST',
@@ -968,6 +978,7 @@ async function warmPool(force) {
   } catch (e) {
     if (el) el.textContent = '⚠️ Could not generate: ' + (e.message || 'error') + '. (Anthropic key/quota?)';
   } finally {
+    clearInterval(poll);
     if (warmBtn) { warmBtn.disabled = false; warmBtn.textContent = '⚡ Pre-generate Pool'; }
     if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '♻️ Refresh All Banks'; }
     refreshWarmStatus();
