@@ -927,6 +927,41 @@ async function deleteTopicFromRow(btn) {
   }
 }
 
+// Show "N of M topics have cached questions" under the setup buttons.
+async function refreshWarmStatus() {
+  const el = document.getElementById('warmPoolStatus');
+  if (!el) return;
+  try {
+    const d = await (await fetch('/api/pool/status')).json();
+    if (!d || !d.total) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    const done = d.cached >= d.total;
+    el.textContent = done
+      ? `✅ All ${d.total} pooled topics are cached — random games cost no AI tokens.`
+      : `⚡ ${d.cached} of ${d.total} pooled topics cached. Pre-generate the rest for token-free play.`;
+  } catch (e) { el.classList.add('hidden'); }
+}
+
+// Pre-generate question banks for every pooled topic that lacks one.
+async function warmPool() {
+  const btn = document.getElementById('warmPoolBtn');
+  const el = document.getElementById('warmPoolStatus');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Pre-generating…'; }
+  if (el) { el.classList.remove('hidden'); el.textContent = 'Generating question banks — this can take a minute for many topics…'; }
+  try {
+    const res = await fetch('/api/pool/warm', { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    const failedNote = d.failed && d.failed.length ? ` (${d.failed.length} failed: ${d.failed.join(', ')})` : '';
+    if (el) el.textContent = `✅ Done — generated ${d.generated} new, ${d.alreadyCached} already cached of ${d.total} topics${failedNote}.`;
+  } catch (e) {
+    if (el) el.textContent = '⚠️ Could not pre-generate: ' + (e.message || 'error') + '. (Anthropic key/quota?)';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Pre-generate Pool'; }
+    refreshWarmStatus();
+  }
+}
+
 function render() {
   if (!state) return;
 
@@ -948,6 +983,7 @@ function render() {
         data.double.forEach((cat, i) => { if (doubleNames[i]) doubleNames[i].value = cat; });
         refreshCriteriaIndicators();
       });
+    refreshWarmStatus();
     // Warn the host if persistent storage isn't configured (custom categories /
     // pool edits would be lost on every redeploy).
     fetch('/api/storage/diag').then(r => r.json()).then(d => {

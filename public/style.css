@@ -1144,6 +1144,18 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 #storageWarn strong { color: #fff; }
 
+.warm-status {
+  max-width: 860px;
+  margin: 10px auto 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(245,166,35,0.12);
+  border: 1px solid rgba(245,166,35,0.4);
+  color: #ffe6b3;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 /* Setup: highlight a category whose criteria differs from its name */
 .cat-mismatch .cat-criteria { border-color: #F5A623; border-style: solid; background: #1a1405; color: #ffe9b0; }
 .cat-crit-note { color: #F5A623; font-size: 0.72rem; font-weight: bold; margin-top: 3px; }

@@ -30,6 +30,20 @@ const GIST_ID = process.env.GIST_ID;
 const GIST_FILENAME = 'jeopardy-pool.json';
 const useGist = !!(GIST_TOKEN && GIST_ID);
 
+// ── Pre-generated question cache ─────────────────────────────────────────────
+// To avoid re-querying Anthropic every game, each pooled topic's questions are
+// generated ONCE as a "bank" (~20 clues across 5 difficulty tiers) and stored.
+// Each game DRAWS 5 (one per tier) from the bank, token-free, so the same topic
+// plays differently each time. Banks are sharded across several Gist files
+// (hash-bucketed by topic) so the store scales to thousands of topics without
+// any single file approaching the Gist API's ~1 MB per-file truncation point.
+const QUESTION_SHARDS = 8;
+const bankCache = new Map();      // topicKey -> { questions:[{clue,answer,difficulty}], generatedAt }
+const loadedShards = new Set();   // shard indices already pulled into bankCache
+function topicKey(t) { return String(t || '').trim().toLowerCase(); }
+function shardOf(key) { let h = 0; for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0; return h % QUESTION_SHARDS; }
+function shardFile(i) { return `questions-${i}.json`; }
+
 function localPool() {
   try { return JSON.parse(fs.readFileSync(CATEGORIES_PATH, 'utf8')).pool || []; }
   catch (e) { return []; }
@@ -108,6 +122,47 @@ app.post('/api/categories/pool', async (req, res) => {
   res.json({ pool });
 });
 
+// How many pooled topics already have a cached question bank (for the UI).
+app.get('/api/pool/status', async (req, res) => {
+  try {
+    const pool = await readPool();
+    let cached = 0;
+    for (const t of pool) if (await getBank(t)) cached++;
+    res.json({ total: pool.length, cached });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pre-generate question banks for every pooled topic that doesn't have one yet,
+// so future games of those topics cost no Anthropic tokens. One-time-ish admin
+// action; it can take a while for many topics. Returns a summary.
+let warming = false;
+app.post('/api/pool/warm', async (req, res) => {
+  if (warming) return res.status(409).json({ error: 'already pre-generating — please wait' });
+  warming = true;
+  try {
+    const pool = await readPool();
+    const missing = [];
+    for (const t of pool) if (!(await getBank(t))) missing.push(t);
+
+    const fresh = [], failed = [];
+    await runWithConcurrency(missing, 4, async (t) => {
+      try {
+        const bank = { questions: await generateQuestionBank(t), generatedAt: Date.now() };
+        if (drawBoardClues(bank)) fresh.push({ topic: t, bank });
+        else failed.push(t);
+      } catch (e) { failed.push(t); }
+    });
+    if (fresh.length) await saveBanks(fresh);
+    res.json({ total: pool.length, alreadyCached: pool.length - missing.length, generated: fresh.length, failed });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    warming = false;
+  }
+});
+
 // ── Custom categories (host-authored questions, with optional media DDs) ─────
 // Question TEXT persists in the Gist (or a local file fallback); media binaries
 // live only in memory (customMedia) and are re-uploaded each session.
@@ -120,8 +175,18 @@ async function readGistFile(filename) {
     const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json' },
     });
-    if (r.ok) { const g = await r.json(); const f = g.files && g.files[filename]; if (f && f.content) return JSON.parse(f.content); }
-    else console.error('Gist read failed:', r.status);
+    if (!r.ok) { console.error('Gist read failed:', r.status); return null; }
+    const g = await r.json();
+    const f = g.files && g.files[filename];
+    if (!f) return null;
+    let content = f.content;
+    // The Gists API truncates a file's inline `content` at ~1 MB and exposes the
+    // full body via raw_url — follow it so large shards aren't silently cut off.
+    if (f.truncated && f.raw_url) {
+      const rr = await fetch(f.raw_url, { headers: { Authorization: `Bearer ${GIST_TOKEN}` } });
+      if (rr.ok) content = await rr.text();
+    }
+    if (content) return JSON.parse(content);
   } catch (e) { console.error('Gist read error:', e.message); }
   return null;
 }
@@ -140,6 +205,86 @@ async function readCustom() {
 async function writeCustom(list) {
   if (useGist) { await writeGistFile(CUSTOM_FILENAME, list); return; }
   fs.writeFileSync(CUSTOM_PATH, JSON.stringify(list, null, 2) + '\n');
+}
+
+// ── Question-bank cache I/O (sharded across Gist files) ──────────────────────
+// A shard is loaded from the Gist at most once per process and merged into
+// bankCache; writes re-serialize every cached topic that belongs to that shard.
+async function ensureShardLoaded(i) {
+  if (loadedShards.has(i)) return;
+  if (useGist) {
+    const data = await readGistFile(shardFile(i));
+    if (data && typeof data === 'object') {
+      for (const [k, v] of Object.entries(data)) {
+        if (v && Array.isArray(v.questions)) bankCache.set(k, v);
+      }
+    }
+  }
+  loadedShards.add(i);   // mark loaded even without a Gist (local mode = in-memory only)
+}
+
+// Return the cached bank for a topic, or null if none has been generated yet.
+async function getBank(topic) {
+  const key = topicKey(topic);
+  if (!key) return null;
+  await ensureShardLoaded(shardOf(key));
+  return bankCache.get(key) || null;
+}
+
+// Persist freshly generated banks. Each entry is { topic, bank }. Touched shards
+// are rewritten once apiece (so generating several topics in one shard = 1 write).
+async function saveBanks(entries) {
+  const dirty = new Set();
+  for (const { topic, bank } of entries) {
+    const key = topicKey(topic);
+    if (!key || !bank) continue;
+    await ensureShardLoaded(shardOf(key));
+    bankCache.set(key, bank);
+    dirty.add(shardOf(key));
+  }
+  if (!useGist) return;   // local mode keeps banks in memory only (regenerated on restart)
+  for (const i of dirty) {
+    const obj = {};
+    for (const [k, v] of bankCache.entries()) if (shardOf(k) === i) obj[k] = v;
+    try { await writeGistFile(shardFile(i), obj); }
+    catch (e) { console.error('shard write failed', i, e.message); }
+  }
+}
+
+// Draw a 5-clue board (easiest→hardest) from a bank: one random unused clue per
+// difficulty tier, falling back to neighbouring tiers if a tier is thin.
+function drawBoardClues(bank) {
+  const qs = (bank && bank.questions) || [];
+  if (qs.length < 5) return null;
+  const byTier = [[], [], [], [], []];
+  qs.forEach(q => { const d = Math.max(1, Math.min(5, Number(q.difficulty) || 3)); byTier[d - 1].push(q); });
+  const used = new Set();
+  const pick = (tier) => {
+    const order = [tier];
+    for (let off = 1; off < 5; off++) { if (tier - off >= 0) order.push(tier - off); if (tier + off < 5) order.push(tier + off); }
+    for (const t of order) {
+      const avail = byTier[t].filter(q => !used.has(q));
+      if (avail.length) { const q = avail[Math.floor(Math.random() * avail.length)]; used.add(q); return q; }
+    }
+    return null;
+  };
+  const out = [];
+  for (let tier = 0; tier < 5; tier++) { const q = pick(tier); if (!q) return null; out.push({ clue: q.clue, answer: q.answer }); }
+  return out;
+}
+
+// Cache-first: draw 5 clues for a topic. On a cache miss, generate a full bank
+// (so the NEXT game is token-free too), draw from it, and return it for saving.
+// Returns { clues, fresh } where fresh is { topic, bank } when newly generated.
+async function getQuestionsForTopic(criteria) {
+  const cached = await getBank(criteria);
+  const drawn = cached && drawBoardClues(cached);
+  if (drawn) return { clues: drawn, fresh: null };
+  let bank = null;
+  try { bank = { questions: await generateQuestionBank(criteria), generatedAt: Date.now() }; }
+  catch (e) { bank = null; }
+  const five = (bank && drawBoardClues(bank)) || await generateQuestions(criteria);
+  return { clues: five, fresh: bank ? { topic: criteria, bank } : null };
 }
 
 app.get('/api/custom', async (req, res) => {
@@ -668,6 +813,59 @@ Rules:
   throw lastErr;
 }
 
+// Generate a CACHEABLE bank of ~20 clues for a category, spread across 5
+// difficulty tiers (perTier each). Returns [{clue, answer, difficulty:1..5}].
+// Leaking clues are dropped; we keep the cleanest attempt and require every
+// tier represented plus a healthy total, so drawBoardClues can always fill 5.
+async function generateQuestionBank(category, perTier = 4) {
+  const prompt = `You are writing a large bank of Jeopardy! clues for the category "${category}".
+
+Write ${perTier} clues at EACH of 5 difficulty tiers (tier 1 = easiest/most accessible, tier 5 = hardest), for ${perTier * 5} clues total. In Jeopardy! the host READS a clue (a statement) and players respond with a QUESTION ("What is...?").
+
+ACCURACY IS CRITICAL: state only facts you are highly confident are true. Mentally fact-check each clue and fix anything uncertain. Avoid obscure stats, exact dates, or records you might misremember.
+
+NEVER GIVE AWAY THE ANSWER: the answer must NOT appear anywhere in its own clue, and a clue must not simply restate the category name.
+
+VARIETY: make the clues distinct from one another — different facts, people, works, events — so the bank stays fresh across many games. No two clues should have the same answer.
+
+Return ONLY valid JSON, no other text:
+{"clues":[{"clue":"...","answer":"What is ...?","difficulty":1}, ... ]}
+
+Rules:
+- each clue is a statement/description, NOT a question
+- each answer is phrased "What is X?" or "Who is X?"
+- difficulty is an integer 1-5
+- the answer (and the category name) must never appear in the clue text
+- concise and unambiguous`;
+
+  let lastErr, best = [], bestScore = -1;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await client.messages.create(
+        { model: 'claude-sonnet-4-6', max_tokens: 3500, messages: [{ role: 'user', content: prompt }] },
+        { timeout: 60000, maxRetries: 1 }
+      );
+      const raw = JSON.parse(extractJSON(resp.content[0].text.trim())).clues;
+      if (!Array.isArray(raw)) throw new Error('unexpected bank shape');
+      const clean = raw
+        .filter(q => q && typeof q.clue === 'string' && typeof q.answer === 'string')
+        .map(q => ({ clue: q.clue, answer: q.answer, difficulty: Math.max(1, Math.min(5, Number(q.difficulty) || 3)) }))
+        .filter(q => !clueLeaks(q.clue, q.answer, category));
+      const tiers = new Set(clean.map(q => q.difficulty));
+      const score = clean.length + tiers.size * 100;   // prefer full tier coverage, then volume
+      if (score > bestScore) { best = clean; bestScore = score; }
+      if (clean.length >= 15 && tiers.size === 5) return clean;
+      throw new Error(`bank too thin (${clean.length} clues, ${tiers.size}/5 tiers)`);
+    } catch (err) {
+      lastErr = err;
+      console.error(`bank "${category}" attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
+  // Accept the best usable attempt (enough to draw a board), else fail.
+  if (best.length >= 5 && new Set(best.map(q => q.difficulty)).size >= 1) return best;
+  throw lastErr || new Error('could not build a question bank');
+}
+
 // Regenerate ONE board clue for a category, at the difficulty of its slot
 // (index 0 = easiest .. 4 = hardest), avoiding the other clues already in the
 // category. Returns { clue, answer }. Same self-verifying / leak-check retries.
@@ -954,14 +1152,18 @@ io.on('connection', (socket) => {
     const aiSingle = {}, aiDouble = {};
     let finalClue = null;
     const failures = [];
+    const freshBanks = [];   // newly generated banks to persist to the cache after
 
     await runWithConcurrency(tasks, 6, async (t) => {
       try {
         if (t.round === 'final') {
           finalClue = manualFinal ? manualFinal : await generateFinalClue(gameState.finalCategory);
         } else {
-          const clues = await generateQuestions(t.criteria);
+          // Cache-first: draws from a stored bank when available (no API call),
+          // otherwise generates a bank and queues it to be saved.
+          const { clues, fresh } = await getQuestionsForTopic(t.criteria);
           (t.round === 'single' ? aiSingle : aiDouble)[t.name] = clues;
+          if (fresh) freshBanks.push(fresh);
         }
       } catch (err) {
         failures.push(t.round === 'final' ? 'Final Jeopardy' : t.name);
@@ -969,6 +1171,10 @@ io.on('connection', (socket) => {
       gameState.genProgress.done++;
       broadcastState();
     });
+
+    // Persist any newly built banks in the background so the host isn't blocked
+    // on Gist writes — the next game of these topics will play token-free.
+    if (freshBanks.length) saveBanks(freshBanks).catch(e => console.error('bank persist failed:', e.message));
 
     if (failures.length) {
       console.error('Failed categories:', failures.join(', '));
