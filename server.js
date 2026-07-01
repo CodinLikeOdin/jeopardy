@@ -74,9 +74,13 @@ async function fetchPersistedMedia(catId, qIndex) {
   try {
     const list = await ghContents(`media/${catId}`);
     if (!Array.isArray(list)) return null;
-    const f = list.find(x => x.name && x.name.startsWith(qIndex + '.') && x.download_url);
+    const f = list.find(x => x.name && x.name.startsWith(qIndex + '.'));
     if (!f) return null;
-    const rr = await fetch(f.download_url, { headers: { Authorization: `Bearer ${MEDIA_TOKEN}` } });
+    // Pull the raw bytes via the authenticated Contents API (works for private
+    // repos; download_url needs a separate short-lived token so we avoid it).
+    const rr = await fetch(`https://api.github.com/repos/${MEDIA_REPO}/contents/media/${catId}/${encodeURIComponent(f.name)}`, {
+      headers: { Authorization: `Bearer ${MEDIA_TOKEN}`, Accept: 'application/vnd.github.raw' },
+    });
     if (!rr.ok) return null;
     const buffer = Buffer.from(await rr.arrayBuffer());
     const ext = f.name.split('.').pop().toLowerCase();
