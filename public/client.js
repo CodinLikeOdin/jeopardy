@@ -119,6 +119,7 @@ const socket = io();
 let myId = null;
 let isHost = false;
 let myName = null;            // remembered so we can re-join after a reconnect
+let lastHostClaim = 0;        // throttles the host self-heal re-claim
 let state = null;
 let buzzPending = false;      // optimistic: emitted a buzz, awaiting next state
 let activeAudioKey = null;    // which question's audio we've already scheduled
@@ -614,10 +615,12 @@ socket.on('joined', ({ id }) => {
 socket.on('state', (s) => {
   state = s;
   // Host self-heal: if the server's host binding has drifted from our CURRENT
-  // socket id (e.g. a silent mobile reconnect gave us a new id but the rebind
-  // didn't land), re-claim host so host-only actions (Start Over, regenerate,
-  // Start Game…) don't silently do nothing.
-  if (isHost && s.hostId && socket.id && s.hostId !== socket.id) {
+  // socket id (e.g. Safari/Render dropped the socket and reconnected with a new
+  // id, or the server cold-started and lost hostId), re-claim host so host-only
+  // actions (Start Over, regenerate, Start Game…) don't silently do nothing.
+  // Throttled so two accidental host tabs can't ping-pong host ownership.
+  if (isHost && s.hostId && socket.id && s.hostId !== socket.id && Date.now() - lastHostClaim > 3000) {
+    lastHostClaim = Date.now();
     socket.emit('join', { name: 'Host', isHost: true });
   }
   updateTitleGate();     // guests wait on the title screen until questions are generated
