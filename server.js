@@ -1918,7 +1918,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('resetGame', () => {
-    if (socket.id !== gameState.hostId) return;
+    // If our host binding is stale (silent reconnect), nudge a re-join so the
+    // client re-claims host and the tap can be retried, instead of no-oping.
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     // Soft reset: keep the host and players (scores zeroed), clear the board,
     // and return to category setup so a new game can start immediately.
     clearQuestionTimeout();

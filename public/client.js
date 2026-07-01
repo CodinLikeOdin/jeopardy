@@ -613,6 +613,13 @@ socket.on('joined', ({ id }) => {
 
 socket.on('state', (s) => {
   state = s;
+  // Host self-heal: if the server's host binding has drifted from our CURRENT
+  // socket id (e.g. a silent mobile reconnect gave us a new id but the rebind
+  // didn't land), re-claim host so host-only actions (Start Over, regenerate,
+  // Start Game…) don't silently do nothing.
+  if (isHost && s.hostId && socket.id && s.hostId !== socket.id) {
+    socket.emit('join', { name: 'Host', isHost: true });
+  }
   updateTitleGate();     // guests wait on the title screen until questions are generated
   if (myId) render();
 });
