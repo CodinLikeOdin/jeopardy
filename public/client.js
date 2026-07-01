@@ -646,6 +646,10 @@ socket.on('error', ({ message }) => {
   alert('Error: ' + message);
 });
 
+socket.on('boardSaved', ({ name }) => alert(`✅ Saved board "${name}". Load it later from the setup screen.`));
+socket.on('boardLoaded', ({ name }) => { closeBoardPicker(); });
+socket.on('boardsChanged', () => renderBoardPicker());
+
 // Final Jeopardy answer window closed — stop the think-music everywhere.
 socket.on('finalTimeUp', () => {
   stopJingle();
@@ -983,6 +987,56 @@ async function warmPool(force) {
     if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '♻️ Refresh All Banks'; }
     refreshWarmStatus();
   }
+}
+
+// ── Save / load whole boards ─────────────────────────────────
+// Save the fully-configured board from the review screen.
+function saveCurrentBoard() {
+  const name = (prompt('Name this board (e.g. "Family Game Night"):') || '').trim();
+  if (!name) return;
+  socket.emit('saveBoard', { name });
+}
+
+function openBoardPicker() {
+  document.getElementById('boardPicker').classList.remove('hidden');
+  renderBoardPicker();
+}
+function closeBoardPicker() {
+  const el = document.getElementById('boardPicker');
+  if (el) el.classList.add('hidden');
+}
+
+async function renderBoardPicker() {
+  const el = document.getElementById('boardPicker');
+  if (!el) return;
+  let boards = [];
+  try { boards = (await (await fetch('/api/boards')).json()).boards || []; } catch (e) {}
+  const rows = boards.length ? boards.map(b => {
+    const when = b.savedAt ? new Date(b.savedAt).toLocaleDateString() : '';
+    const cats = (b.categories || []).slice(0, 6).join(', ');
+    return `<div class="bp-row">
+      <div class="bp-meta">
+        <div class="bp-name">${escHtml(b.name)}</div>
+        <div class="bp-sub">${escHtml(cats)}${when ? ' · ' + when : ''}</div>
+      </div>
+      <button class="btn btn-sm btn-primary" onclick="loadSavedBoard('${escAttr(b.name)}')">Load</button>
+      <button class="btn btn-sm btn-secondary" onclick="deleteSavedBoard('${escAttr(b.name)}')" title="Delete">🗑</button>
+    </div>`;
+  }).join('') : `<p class="subtitle">No saved boards yet. Build a board, then use 💾 Save Board on the review screen.</p>`;
+  el.innerHTML = `
+    <div class="card bp-card">
+      <div class="bp-head"><h2>Saved Boards</h2><button class="btn btn-sm btn-secondary" onclick="closeBoardPicker()">✕ Close</button></div>
+      <div class="bp-list">${rows}</div>
+    </div>`;
+}
+
+function loadSavedBoard(name) {
+  if (!confirm(`Load "${name}"? This replaces the current setup and jumps to the review screen.`)) return;
+  socket.emit('loadBoard', { name });
+}
+function deleteSavedBoard(name) {
+  if (!confirm(`Delete saved board "${name}"? This can't be undone.`)) return;
+  socket.emit('deleteBoard', { name });
 }
 
 function render() {
@@ -1337,6 +1391,7 @@ function renderReview() {
         <div id="rvStatus" class="rv-status hidden"></div>
         <div class="rv-buttons">
           <button id="rvRegen" class="btn btn-secondary" onclick="regenerateFinal()">⟳ Regenerate Final</button>
+          <button class="btn btn-secondary" onclick="saveCurrentBoard()" title="Save this whole board (all categories, clues, daily doubles, Final) to reload later">💾 Save Board</button>
           <button id="rvStart" class="btn btn-primary" onclick="beginRounds()">Start Game →</button>
         </div>
       </div>`;

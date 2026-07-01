@@ -30,6 +30,61 @@ const GIST_ID = process.env.GIST_ID;
 const GIST_FILENAME = 'jeopardy-pool.json';
 const useGist = !!(GIST_TOKEN && GIST_ID);
 
+// Optional GitHub REPO (owner/name) for persisting custom-category media
+// (images/audio) so they survive redeploys and don't need re-uploading. Uses
+// MEDIA_TOKEN, or falls back to GIST_TOKEN if it has `repo` scope.
+const MEDIA_REPO = process.env.MEDIA_REPO;
+const MEDIA_TOKEN = process.env.MEDIA_TOKEN || GIST_TOKEN;
+const useMediaRepo = !!(MEDIA_REPO && MEDIA_TOKEN);
+const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg', 'audio/webm': 'weba' };
+const MIME_BY_EXT = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', weba: 'audio/webm' };
+
+// GitHub Contents API helpers for the media repo (best-effort; callers catch).
+async function ghContents(pathInRepo) {
+  const r = await fetch(`https://api.github.com/repos/${MEDIA_REPO}/contents/${pathInRepo}`, {
+    headers: { Authorization: `Bearer ${MEDIA_TOKEN}`, Accept: 'application/vnd.github+json' },
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('gh contents ' + r.status);
+  return r.json();
+}
+async function ghPutFile(pathInRepo, buffer, message) {
+  const existing = await ghContents(pathInRepo).catch(() => null);
+  const body = { message, content: buffer.toString('base64') };
+  if (existing && existing.sha) body.sha = existing.sha;
+  const r = await fetch(`https://api.github.com/repos/${MEDIA_REPO}/contents/${pathInRepo}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${MEDIA_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error('gh put ' + r.status + ' ' + (await r.text()).slice(0, 200));
+}
+
+// Push one custom-media file to media/<catId>/<qIndex>.<ext> in the media repo.
+async function persistMedia(catId, qIndex, contentType, buffer) {
+  if (!useMediaRepo) return;
+  const ext = EXT_BY_MIME[contentType] || (contentType.startsWith('image/') ? 'img' : 'bin');
+  try { await ghPutFile(`media/${catId}/${qIndex}.${ext}`, buffer, `media ${catId}/${qIndex}`); }
+  catch (e) { console.error('media persist failed:', e.message); }
+}
+
+// Fetch a persisted media file back from the repo (any extension for that slot).
+async function fetchPersistedMedia(catId, qIndex) {
+  if (!useMediaRepo) return null;
+  try {
+    const list = await ghContents(`media/${catId}`);
+    if (!Array.isArray(list)) return null;
+    const f = list.find(x => x.name && x.name.startsWith(qIndex + '.') && x.download_url);
+    if (!f) return null;
+    const rr = await fetch(f.download_url, { headers: { Authorization: `Bearer ${MEDIA_TOKEN}` } });
+    if (!rr.ok) return null;
+    const buffer = Buffer.from(await rr.arrayBuffer());
+    const ext = f.name.split('.').pop().toLowerCase();
+    const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+    return { kind: contentType.startsWith('image/') ? 'image' : 'audio', contentType, buffer };
+  } catch (e) { console.error('media fetch failed:', e.message); return null; }
+}
+
 // ── Pre-generated question cache ─────────────────────────────────────────────
 // To avoid re-querying Anthropic every game, each pooled topic's questions are
 // generated ONCE as a "bank" (~20 clues across 5 difficulty tiers) and stored.
@@ -217,6 +272,21 @@ async function writeCustom(list) {
   fs.writeFileSync(CUSTOM_PATH, JSON.stringify(list, null, 2) + '\n');
 }
 
+// ── Saved boards (a whole configured game: all categories, clues, DDs, Final) ─
+// Stored as { "<name>": { savedAt, categories, board, criteria, customCats,
+// dailyDoubles, finalJeopardy } } so a host can reload an exact board later
+// with no generation.
+const BOARDS_FILENAME = 'jeopardy-boards.json';
+const BOARDS_PATH = path.join(__dirname, 'saved-boards.json');
+async function readBoards() {
+  if (useGist) { const d = await readGistFile(BOARDS_FILENAME); if (d && typeof d === 'object') return d; }
+  try { return JSON.parse(fs.readFileSync(BOARDS_PATH, 'utf8')); } catch (e) { return {}; }
+}
+async function writeBoards(obj) {
+  if (useGist) { await writeGistFile(BOARDS_FILENAME, obj); return; }
+  fs.writeFileSync(BOARDS_PATH, JSON.stringify(obj, null, 2) + '\n');
+}
+
 // ── Question-bank cache I/O (sharded across Gist files) ──────────────────────
 // A shard is loaded from the Gist at most once per process and merged into
 // bankCache; writes re-serialize every cached topic that belongs to that shard.
@@ -320,6 +390,21 @@ app.get('/api/custom', async (req, res) => {
   res.json({ categories: await readCustom() });
 });
 
+// List saved boards (names + metadata only, not the full payloads).
+app.get('/api/boards', async (req, res) => {
+  try {
+    const b = await readBoards();
+    const boards = Object.keys(b).map(name => ({
+      name,
+      savedAt: b[name].savedAt || null,
+      categories: (b[name].categories && b[name].categories.single) || [],
+    })).sort((a, b2) => (b2.savedAt || 0) - (a.savedAt || 0));
+    res.json({ boards });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Upsert or delete a custom category. body: { category } | { action:'delete', id }
 app.post('/api/custom', async (req, res) => {
   const body = req.body || {};
@@ -358,16 +443,21 @@ app.get('/api/storage/diag', async (req, res) => {
     useGist,
     hasGistToken: !!GIST_TOKEN,
     hasGistId: !!GIST_ID,
+    useMediaRepo,
     customCount,
     note: useGist ? 'persistent (Gist)' : 'EPHEMERAL local file — lost on every redeploy',
+    mediaNote: useMediaRepo ? 'media persisted to repo' : 'media is in-memory only — re-upload after each redeploy',
   });
 });
 
 // In-memory media for custom-category questions, keyed "<catId>:<qIndex>".
 let customMedia = {}; // -> { kind:'image'|'audio', contentType, buffer }
 
-app.get('/api/custommedia/:catId/:qIndex', (req, res) => {
-  const m = customMedia[req.params.catId + ':' + req.params.qIndex];
+app.get('/api/custommedia/:catId/:qIndex', async (req, res) => {
+  const key = req.params.catId + ':' + req.params.qIndex;
+  let m = customMedia[key];
+  // On a memory miss, backfill from the persisted media repo (survives redeploys).
+  if (!m) { m = await fetchPersistedMedia(req.params.catId, req.params.qIndex); if (m) customMedia[key] = m; }
   if (!m) return res.status(404).end();
   res.setHeader('Content-Type', m.contentType);
   res.setHeader('Cache-Control', 'public, max-age=300');
@@ -1391,6 +1481,80 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Save the fully-configured board (all categories, clues, DDs, Final) under a
+  // name so it can be reloaded exactly later with no generation.
+  socket.on('saveBoard', async ({ name } = {}) => {
+    if (socket.id !== gameState.hostId) return;
+    if (!gameState.board.single || !gameState.board.double) {
+      return socket.emit('error', { message: 'Build a board first, then save it.' });
+    }
+    const nm = String(name || '').trim().slice(0, 60);
+    if (!nm) return socket.emit('error', { message: 'Give the board a name.' });
+    try {
+      const boards = await readBoards();
+      boards[nm] = {
+        savedAt: Date.now(),
+        categories: { single: Object.keys(gameState.board.single || {}), double: Object.keys(gameState.board.double || {}) },
+        board: gameState.board,
+        criteria: gameState.criteria,
+        customCats: gameState.customCats,
+        dailyDoubles: gameState.dailyDoubles,
+        finalJeopardy: gameState.finalJeopardy,
+      };
+      await writeBoards(boards);
+      socket.emit('boardSaved', { name: nm });
+    } catch (e) {
+      socket.emit('error', { message: 'Could not save board: ' + e.message });
+    }
+  });
+
+  // Load a saved board straight into the review screen (no generation, no
+  // tokens). The host can then tweak and Start Game.
+  socket.on('loadBoard', async ({ name } = {}) => {
+    if (socket.id !== gameState.hostId) return;
+    const nm = String(name || '').trim();
+    try {
+      const boards = await readBoards();
+      const b = boards[nm];
+      if (!b || !b.board || !b.board.single) return socket.emit('error', { message: 'That saved board is missing.' });
+      clearQuestionTimeout();
+      clearFinalTimeout();
+      gameState.board = b.board;
+      gameState.criteria = b.criteria || { single: {}, double: {} };
+      gameState.customCats = b.customCats || {};
+      gameState.dailyDoubles = b.dailyDoubles || [];
+      gameState.finalJeopardy = b.finalJeopardy || null;
+      gameState.categories = Object.keys(b.board.single || {});
+      gameState.usedSquares = { single: {}, double: {} };
+      gameState.regenerating = {};
+      gameState.regeneratingClues = {};
+      gameState.currentQuestion = null;
+      gameState.buzzers = [];
+      gameState.buzzOpen = false;
+      gameState.dailyDoubleWager = null;
+      gameState.boardControl = null;
+      gameState.final = null;
+      gameState.genProgress = null;
+      gameState.phase = 'review';
+      broadcastState();
+      socket.emit('boardLoaded', { name: nm });
+    } catch (e) {
+      socket.emit('error', { message: 'Could not load board: ' + e.message });
+    }
+  });
+
+  socket.on('deleteBoard', async ({ name } = {}) => {
+    if (socket.id !== gameState.hostId) return;
+    try {
+      const boards = await readBoards();
+      delete boards[String(name || '').trim()];
+      await writeBoards(boards);
+      socket.emit('boardsChanged');
+    } catch (e) {
+      socket.emit('error', { message: 'Could not delete board: ' + e.message });
+    }
+  });
+
   // ── Final Jeopardy play ──────────────────────────────────────
   // Each eligible contestant secretly wagers 0..their score.
   socket.on('submitFinalWager', ({ wager }) => {
@@ -1553,6 +1717,8 @@ io.on('connection', (socket) => {
     const cap = kind === 'image' ? 600000 : 4000000; // ~600KB image, ~4MB audio
     if (buf.length === 0 || buf.length > cap) { if (typeof ack === 'function') ack({ ok: false, tooBig: buf.length > cap }); return; }
     customMedia[String(catId) + ':' + String(qIndex)] = { kind, contentType, buffer: buf };
+    // Persist to the media repo (best-effort) so it survives redeploys.
+    persistMedia(String(catId), String(qIndex), contentType, buf);
     if (typeof ack === 'function') ack({ ok: true });
   });
 

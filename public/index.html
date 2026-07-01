@@ -122,6 +122,7 @@
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;justify-content:center">
         <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>
         <button class="btn btn-secondary" onclick="openCustomEditor()">✎ Custom Categories</button>
+        <button class="btn btn-secondary" onclick="openBoardPicker()" title="Reload a previously saved board">📂 Load Saved Board</button>
         <button id="warmPoolBtn" class="btn btn-secondary" onclick="warmPool(false)" title="Pre-generate &amp; cache questions for saved topics that don't have any yet, so games cost no AI tokens">⚡ Pre-generate Pool</button>
         <button id="refreshPoolBtn" class="btn btn-secondary" onclick="warmPool(true)" title="Regenerate cached questions for EVERY saved topic (spends tokens) — use to upgrade older/smaller banks">♻️ Refresh All Banks</button>
         <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
@@ -131,6 +132,9 @@
 
     <!-- Custom Category editor (host only) -->
     <div id="customEditor" class="hidden"></div>
+
+    <!-- Saved-board picker (host only) -->
+    <div id="boardPicker" class="hidden"></div>
 
     <!-- Generating -->
     <div id="generating" class="screen hidden">
