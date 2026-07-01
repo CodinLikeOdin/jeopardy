@@ -435,6 +435,30 @@ app.post('/api/custom', async (req, res) => {
   res.json({ category: clean, categories: list });
 });
 
+// Diagnostic: live write/read round-trip against the media repo, so config or
+// token-permission problems are visible instead of failing silently on upload.
+// Exposes the repo name (not secret) and token LENGTH only — never the token.
+app.get('/api/media/diag', async (req, res) => {
+  if (!useMediaRepo) return res.json({ useMediaRepo: false, note: 'MEDIA_REPO / MEDIA_TOKEN not set' });
+  const out = { useMediaRepo: true, repo: MEDIA_REPO, tokenLen: (MEDIA_TOKEN || '').length };
+  try {
+    const root = await fetch(`https://api.github.com/repos/${MEDIA_REPO}`, {
+      headers: { Authorization: `Bearer ${MEDIA_TOKEN}`, Accept: 'application/vnd.github+json' },
+    });
+    out.repoAccessStatus = root.status;   // 200 ok, 404 = repo/token can't see it, 401 = bad token
+    if (root.ok) { const j = await root.json(); out.defaultBranch = j.default_branch; out.private = j.private; }
+  } catch (e) { out.repoAccessError = e.message; }
+  try {
+    await ghPutFile('media/_diag/probe.txt', Buffer.from('ok ' + new Date().toISOString()), 'media diag probe');
+    out.write = 'ok';
+  } catch (e) { out.write = 'FAILED: ' + e.message; }
+  try {
+    const rb = await ghContents('media/_diag/probe.txt');
+    out.readBack = rb && rb.sha ? 'ok' : 'FAILED: not found';
+  } catch (e) { out.readBack = 'FAILED: ' + e.message; }
+  res.json(out);
+});
+
 // Diagnostic: is persistent (Gist) storage actually configured on this server?
 app.get('/api/storage/diag', async (req, res) => {
   let customCount = 0;
