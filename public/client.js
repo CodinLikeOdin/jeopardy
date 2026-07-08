@@ -772,6 +772,7 @@ function renderJudgingPanel() {
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
+  if (isHost) { btn.classList.add('hidden'); return; }   // host runs the board, never buzzes
 
   const q = state && state.currentQuestion;
   if (!q || !state.buzzOpen || q.isDailyDouble || q.revealed) {
@@ -1060,6 +1061,7 @@ function render() {
 
   if (state.phase === 'setup' && isHost && !categoriesPreloaded) {
     categoriesPreloaded = true;
+    clearSetupFields();     // clean slate (also resets fields after Start Over)
     fetch('/api/categories')
       .then(r => r.json())
       .then(data => {
@@ -1281,19 +1283,25 @@ function renderQuestionModal() {
   const wagerSection = document.getElementById('wagerSection');
   if (q.isDailyDouble) {
     ddSection.classList.remove('hidden');
+    // Everyone sees all scores so the wagering contestant can strategize
+    // (the 🎯 controlling player is who's playing this Daily Double).
+    const scoresHtml = `<div class="dd-scores">` + Object.entries(state.players)
+      .sort((a, b) => b[1].score - a[1].score)
+      .map(([id, p]) => `<span class="dd-score${id === state.boardControl ? ' dd-score-ctrl' : ''}">${id === state.boardControl ? '🎯 ' : ''}${escHtml(p.name)}: $${p.score.toLocaleString()}</span>`)
+      .join('') + `</div>`;
     if (isHost && state.dailyDoubleWager === null) {
       const ctrl = state.boardControl ? state.players[state.boardControl] : null;
       const ctrlName = ctrl ? escHtml(ctrl.name) : 'the controlling player';
       const maxWager = ctrl ? Math.max(ctrl.score, q.dollarValue) : q.dollarValue;
-      wagerSection.innerHTML = `
+      wagerSection.innerHTML = scoresHtml + `
         <span>${ctrlName}'s wager (max $${maxWager}):</span>
         <input type="number" id="wagerInput" min="5" max="${maxWager}" value="${q.dollarValue}" style="padding:8px;border-radius:6px;border:none">
         <button class="btn btn-primary btn-sm" onclick="submitWager(${maxWager})">Set Wager</button>
       `;
     } else if (state.dailyDoubleWager !== null) {
-      wagerSection.innerHTML = `<strong>Wager: $${state.dailyDoubleWager}</strong>`;
+      wagerSection.innerHTML = scoresHtml + `<strong>Wager: $${state.dailyDoubleWager}</strong>`;
     } else {
-      wagerSection.innerHTML = '<em>Waiting for wager...</em>';
+      wagerSection.innerHTML = scoresHtml + '<em>Waiting for the host to enter the wager…</em>';
     }
   } else {
     ddSection.classList.add('hidden');
@@ -1624,9 +1632,8 @@ function buildFinalView(f, role) {
   if (f.stage === 'wager') {
     if (role === 'host') {
       body = `<div class="card final-card">
-        <p class="subtitle">Players are placing secret wagers.</p>
+        <p class="subtitle">Players are placing secret wagers. The clue reveals automatically once everyone has wagered.</p>
         <div id="fWagerList"></div>
-        <button class="btn btn-primary" onclick="startFinalClue()">Reveal Clue &amp; Start Timer →</button>
       </div>`;
     } else if (role === 'player') {
       const locked = Object.prototype.hasOwnProperty.call(f.wagers, myId);
@@ -1940,6 +1947,17 @@ function clearCustomFromBlock(blk) {
   refreshCriteriaIndicators();
 }
 
+// Wipe every setup field back to a clean slate (used before (re)preloading,
+// so Start Over lands on a fresh topic screen rather than the last board).
+function clearSetupFields() {
+  document.querySelectorAll('.cat-block').forEach(blk => {
+    if (blk.dataset.customId) clearCustomFromBlock(blk);
+    const nm = blk.querySelector('.cat-name'); if (nm) nm.value = '';
+    const cr = blk.querySelector('.cat-criteria'); if (cr) cr.value = '';
+  });
+  ['finalCat', 'finalClueInput', 'finalAnswerInput'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+}
+
 // ── Custom category editor ────────────────────────────────────
 let editingCat = null;   // { id?, name, questions: [{clue, answer, media, _dataUrl, _missing}] }
 function blankQ() { return { clue: '', answer: '', media: null, _dataUrl: null }; }
@@ -2133,7 +2151,8 @@ function resetGame() {
 
 // Always-available host reset: clears the current game and returns to setup.
 function startOver() {
-  if (!confirm('Start over? This clears the current game and takes you back to question setup.')) return;
+  if (!confirm('Start over? This clears the current game and takes you back to the topic setup screen.')) return;
+  categoriesPreloaded = false;   // force a fresh topic screen (re-preload defaults)
   socket.emit('resetGame');
 }
 

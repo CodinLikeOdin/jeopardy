@@ -1171,3 +1171,11 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 
 /* Review: media clue whose binary is missing */
 .rv-media-badge.rv-media-missing { color: #e74c3c; border: 1px solid #e74c3c; border-radius: 4px; padding: 1px 6px; }
+
+/* Daily double: all scores for strategy (controlling player starred) */
+.dd-scores { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 12px; width: 100%; }
+.dd-score {
+  padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 0.9rem;
+  background: rgba(0,0,0,0.35); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+}
+.dd-score-ctrl { background: #F5A623; color: #000; border-color: #F5A623; }

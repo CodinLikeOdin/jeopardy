@@ -755,7 +755,31 @@ function revealAnswerThenClear() {
     gameState.buzzArmTime = null;
     currentAudio = null;
     broadcastState();
+    maybeAutoAdvance();     // last square of the round done → advance automatically
   }, 2500);
+}
+
+// A round is complete when every square has been used.
+function roundComplete(round) {
+  const board = gameState.board[round];
+  if (!board) return false;
+  const total = Object.keys(board).length * 5;
+  const used = Object.keys(gameState.usedSquares[round] || {}).length;
+  return total > 0 && used >= total;
+}
+// Auto-advance single→double and double→Final when the board is exhausted.
+function maybeAutoAdvance() {
+  if (gameState.phase === 'single' && roundComplete('single')) {
+    clearQuestionTimeout();
+    gameState.phase = 'double';
+    gameState.currentQuestion = null;
+    gameState.buzzers = [];
+    gameState.buzzOpen = false;
+    broadcastState();
+  } else if (gameState.phase === 'double' && roundComplete('double')) {
+    clearQuestionTimeout();
+    startFinalRound();
+  }
 }
 
 function resetGame() {
@@ -876,6 +900,45 @@ function startFinalRound() {
   eligible.forEach(id => { gameState.final.reveal[id] = { wager: false, answer: false, judged: null }; });
   gameState.phase = 'final';
   broadcastState();
+}
+
+// Move Final Jeopardy from the wager stage into the answer stage: read the clue
+// (synced), then run the think-music + answer timer. Called automatically once
+// all wagers are in, or by the host fallback.
+async function revealFinalClue(f) {
+  if (!f || f.stage !== 'wager') return;
+  f.stage = 'answer';
+  broadcastState();
+
+  const buffer = useElevenLabs() ? await generateTTS(f.clue) : null;
+  if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
+  currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
+  const durationMs = buffer
+    ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
+    : Math.ceil(f.clue.length / 12 * 1000) + 1500;
+  f.audioStartTime = Date.now() + LEAD_IN_MS;
+  const clueEnd = f.audioStartTime + durationMs;
+  f.jingleStart = clueEnd + FINAL_PAUSE_MS;
+  f.jingleDurationMs = gameState.settings.finalAnswerMs;
+  f.answerDeadline = f.jingleStart + gameState.settings.finalAnswerMs;
+  broadcastState();
+
+  clearFinalTimeout();
+  finalTimeoutHandle = setTimeout(() => {
+    finalTimeoutHandle = null;
+    if (gameState.final === f && f.stage === 'answer' && !f.answerClosed) {
+      f.answerClosed = true;
+      io.emit('finalTimeUp');
+      broadcastState();
+    }
+  }, Math.max(0, f.answerDeadline - Date.now()));
+}
+
+// Every connected, eligible contestant has locked a wager?
+function allFinalWagersIn(f) {
+  const pending = f.eligible.filter(id =>
+    gameState.players[id] && !gameState.players[id].disconnected && !(id in f.wagers));
+  return pending.length === 0;
 }
 
 function extractJSON(text) {
@@ -1190,7 +1253,7 @@ io.on('connection', (socket) => {
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
-    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles, finalJeopardy, criteria }) => {
+    socket.on('__test_inject', ({ board, phase, settings, dailyDoubles, finalJeopardy, criteria, usedSquares }) => {
       gameState.board.single = board;
       gameState.board.double = board;
       gameState.dailyDoubles = dailyDoubles || [];
@@ -1198,6 +1261,7 @@ io.on('connection', (socket) => {
       if (settings) gameState.settings = { ...gameState.settings, ...settings };
       if (finalJeopardy) gameState.finalJeopardy = finalJeopardy;
       if (criteria) gameState.criteria = criteria;
+      if (usedSquares) gameState.usedSquares = usedSquares;
       const ph = phase || 'single';
       if (ph === 'final') { startFinalRound(); return; }   // builds gameState.final
       gameState.phase = ph;
@@ -1621,42 +1685,14 @@ io.on('connection', (socket) => {
     if (!Number.isFinite(w)) w = 0;
     f.wagers[socket.id] = Math.max(0, Math.min(max, w));
     broadcastState();
+    // Once everyone has wagered, reveal the clue automatically (no host button).
+    if (allFinalWagersIn(f)) revealFinalClue(f);
   });
 
-  // Host reveals the clue and starts the synced think-music + answer timer.
+  // Host fallback to reveal the clue (e.g. if a contestant dropped before wagering).
   socket.on('startFinalClue', async () => {
     if (socket.id !== gameState.hostId) return;
-    const f = gameState.final;
-    if (!f || f.stage !== 'wager') return;
-    f.stage = 'answer';
-    broadcastState();
-
-    // Read the clue aloud (synced on every device); the jingle + timer then run
-    // for finalAnswerMs starting when the clue audio finishes.
-    const buffer = useElevenLabs() ? await generateTTS(f.clue) : null;
-    if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
-    currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
-    const durationMs = buffer
-      ? Math.ceil((buffer.length * 8 / 128000) * 1000) + 600
-      : Math.ceil(f.clue.length / 12 * 1000) + 1500;
-    f.audioStartTime = Date.now() + LEAD_IN_MS;
-    const clueEnd = f.audioStartTime + durationMs;
-    // No buzzer/buzz timer in Final Jeopardy: read the clue, pause a beat, then
-    // the answer timer + think-music start together.
-    f.jingleStart = clueEnd + FINAL_PAUSE_MS;
-    f.jingleDurationMs = gameState.settings.finalAnswerMs;
-    f.answerDeadline = f.jingleStart + gameState.settings.finalAnswerMs;
-    broadcastState();
-
-    clearFinalTimeout();
-    finalTimeoutHandle = setTimeout(() => {
-      finalTimeoutHandle = null;
-      if (gameState.final === f && f.stage === 'answer' && !f.answerClosed) {
-        f.answerClosed = true;
-        io.emit('finalTimeUp');
-        broadcastState();
-      }
-    }, Math.max(0, f.answerDeadline - Date.now()));
+    await revealFinalClue(gameState.final);
   });
 
   // Contestant's answer — stored secretly. Only the FIRST submission broadcasts
