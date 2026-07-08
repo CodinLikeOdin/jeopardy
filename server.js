@@ -61,11 +61,12 @@ async function ghPutFile(pathInRepo, buffer, message) {
 }
 
 // Push one custom-media file to media/<catId>/<qIndex>.<ext> in the media repo.
+// Returns true if it was durably written, false otherwise.
 async function persistMedia(catId, qIndex, contentType, buffer) {
-  if (!useMediaRepo) return;
+  if (!useMediaRepo) return false;
   const ext = EXT_BY_MIME[contentType] || (contentType.startsWith('image/') ? 'img' : 'bin');
-  try { await ghPutFile(`media/${catId}/${qIndex}.${ext}`, buffer, `media ${catId}/${qIndex}`); }
-  catch (e) { console.error('media persist failed:', e.message); }
+  try { await ghPutFile(`media/${catId}/${qIndex}.${ext}`, buffer, `media ${catId}/${qIndex}`); return true; }
+  catch (e) { console.error('media persist failed:', e.message); return false; }
 }
 
 // Fetch a persisted media file back from the repo (any extension for that slot).
@@ -490,6 +491,25 @@ app.get('/api/custommedia/:catId/:qIndex', async (req, res) => {
   res.setHeader('Content-Type', m.contentType);
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.send(m.buffer);
+});
+
+// Durable media upload. REST (not a socket) so a flaky mobile connection can't
+// silently drop it, and we AWAIT the repo persist to report the real result.
+// The data URL is sent as text/plain so the global 100 KB express.json()
+// middleware ignores it; this route parses up to 8 MB.
+app.post('/api/custommedia/:catId/:qIndex', express.text({ limit: '8mb' }), async (req, res) => {
+  const dataUrl = typeof req.body === 'string' ? req.body : '';
+  const m = dataUrl.match(/^data:(image\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/);
+  if (!m) return res.status(400).json({ ok: false, error: 'bad data url' });
+  const contentType = m[1];
+  const kind = contentType.startsWith('image/') ? 'image' : 'audio';
+  const buf = Buffer.from(m[2], 'base64');
+  const cap = kind === 'image' ? 600000 : 4000000; // ~600KB image, ~4MB audio
+  if (buf.length === 0 || buf.length > cap) return res.status(413).json({ ok: false, tooBig: buf.length > cap });
+  const { catId, qIndex } = req.params;
+  customMedia[String(catId) + ':' + String(qIndex)] = { kind, contentType, buffer: buf };
+  const persisted = await persistMedia(String(catId), String(qIndex), contentType, buf);
+  res.json({ ok: true, persisted, useMediaRepo });
 });
 
 let lastTtsError = 'none yet';   // surfaced via /api/tts/diag for debugging
@@ -1506,6 +1526,12 @@ io.on('connection', (socket) => {
   socket.on('beginRounds', () => {
     if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
     gameState.phase = 'single';
+    // Seed board control ONCE at the first round's start: a random contestant
+    // "has the board." Thereafter it passes to whoever last answers correctly.
+    const contestants = Object.keys(gameState.players);
+    gameState.boardControl = contestants.length
+      ? contestants[Math.floor(Math.random() * contestants.length)]
+      : null;
     broadcastState();
   });
 
@@ -1733,22 +1759,9 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  // Host uploads media for a custom-category question (image/audio data URL).
-  socket.on('uploadCustomMedia', ({ catId, qIndex, dataUrl }, ack) => {
-    if (socket.id !== gameState.hostId) return;
-    if (typeof catId !== 'string' || typeof dataUrl !== 'string') return;
-    const m = dataUrl.match(/^data:(image\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/);
-    if (!m) { if (typeof ack === 'function') ack({ ok: false }); return; }
-    const contentType = m[1];
-    const kind = contentType.startsWith('image/') ? 'image' : 'audio';
-    const buf = Buffer.from(m[2], 'base64');
-    const cap = kind === 'image' ? 600000 : 4000000; // ~600KB image, ~4MB audio
-    if (buf.length === 0 || buf.length > cap) { if (typeof ack === 'function') ack({ ok: false, tooBig: buf.length > cap }); return; }
-    customMedia[String(catId) + ':' + String(qIndex)] = { kind, contentType, buffer: buf };
-    // Persist to the media repo (best-effort) so it survives redeploys.
-    persistMedia(String(catId), String(qIndex), contentType, buf);
-    if (typeof ack === 'function') ack({ ok: true });
-  });
+  // (Custom-category media now uploads via POST /api/custommedia/:catId/:qIndex,
+  // which awaits the durable repo persist and reports success — more reliable
+  // than a socket on flaky mobile connections.)
 
   // Clock sync: client measures round-trip and estimates its offset from server time
   socket.on('syncPing', (t0) => {

@@ -1466,7 +1466,7 @@ function updateReviewBoard() {
         const down = i < clues.length - 1
           ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more" ${dis}>▼</button>`
           : `<span class="rv-arrow rv-arrow-empty"></span>`;
-        const mediaBadge = c.media ? `<span class="rv-media-badge">★ ${c.media.type} DD</span>` : '';
+        const mediaBadge = c.media ? `<span class="rv-media-badge" data-media="${escHtml(c.media.catId)}/${c.media.qIndex}">★ ${c.media.type} DD</span>` : '';
         // Single-clue regenerate: AI categories only, and not a media daily double.
         const regenBtn = (!isCustom && !c.media)
           ? `<button class="rv-regen-one" onclick="regenerateClue('${round}','${escAttr(name)}',${i})" title="Regenerate just this clue" ${dis}>${regenOne ? '…' : '⟳'}</button>`
@@ -1496,6 +1496,22 @@ function updateReviewBoard() {
       </div>`;
     }).join('') + `</div>`;
   }).join('');
+
+  // Flag media clues whose binary is missing (never uploaded / didn't persist).
+  el.querySelectorAll('.rv-media-badge[data-media]').forEach(badge => {
+    probeMedia(badge.dataset.media, (status) => {
+      if (status === 'missing') { badge.classList.add('rv-media-missing'); badge.textContent = '⚠ media missing — re-attach'; }
+    });
+  });
+}
+
+// Lightweight HEAD probe (cached) to see if a media binary is actually served.
+const mediaProbe = {};   // "catId/qIndex" -> 'ok' | 'missing'
+function probeMedia(key, cb) {
+  if (mediaProbe[key]) return cb(mediaProbe[key]);
+  fetch('/api/custommedia/' + key, { method: 'HEAD' })
+    .then(r => { mediaProbe[key] = r.ok ? 'ok' : 'missing'; cb(mediaProbe[key]); })
+    .catch(() => { mediaProbe[key] = 'missing'; cb('missing'); });
 }
 
 function regenerateCategory(round, name) { socket.emit('regenerateCategory', { round, name }); }
@@ -2066,21 +2082,27 @@ function saveCustomCat() {
     .then(async (res) => {
       if (res.error) { alert('Save failed: ' + res.error); return; }
       const saved = res.category;
-      // Upload media binaries for questions that have one loaded, keyed by final index.
+      // Upload each media binary via REST (awaited, durable), keyed by final index.
+      const failures = [];
       for (let idx = 0; idx < qs.length; idx++) {
         if (!qs[idx]._dataUrl) continue;
-        await new Promise((resolve) => {
-          socket.emit('uploadCustomMedia', { catId: saved.id, qIndex: idx, dataUrl: qs[idx]._dataUrl }, (ack) => {
-            if (ack && ack.tooBig) alert(`Media for question ${idx + 1} is too large and was not saved.`);
-            resolve();
+        try {
+          const r = await fetch(`/api/custommedia/${saved.id}/${idx}`, {
+            method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: qs[idx]._dataUrl,
           });
-          setTimeout(resolve, 8000);
-        });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j.ok) failures.push(`Q${idx + 1}: ${j.tooBig ? 'too large' : 'upload failed'}`);
+          else if (j.useMediaRepo && !j.persisted) failures.push(`Q${idx + 1}: couldn't save to media storage`);
+          else { delete mediaProbe[saved.id + '/' + idx]; }   // fresh — let the review re-probe
+        } catch (e) {
+          failures.push(`Q${idx + 1}: upload error`);
+        }
       }
       customList = res.categories || customList;
       editingCat = null;
       renderCustomEditor();
-      alert('Custom category saved!');
+      if (failures.length) alert('Saved, but some media did NOT save:\n' + failures.join('\n') + '\n\nRe-open the category and re-attach those.');
+      else alert('Custom category saved!');
     })
     .catch(() => alert('Save failed.'));
 }
