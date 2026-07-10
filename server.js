@@ -1256,9 +1256,10 @@ function shuffled(arr) {
   return a;
 }
 
-// Build a board category (5 clues) from a saved custom category. Always include
-// media questions (they're the daily doubles), then fill randomly to 5. Returns
-// { clues, mediaSlots } where mediaSlots are the value indexes carrying media.
+// Build a board category (5 clues) from a saved custom category. Media questions
+// are included first (so an image/audio clue always makes the board), then the
+// rest fill randomly to 5. Media no longer forces a Daily Double — the host sets
+// DDs on the review screen. Returns { clues }.
 function buildCustomCategory(cat) {
   const withIdx = cat.questions.map((q, idx) => ({ q, idx }));
   const mediaQs = withIdx.filter(x => x.q && x.q.media);
@@ -1269,9 +1270,7 @@ function buildCustomCategory(cat) {
     answer: q.answer,
     media: q.media ? { type: q.media.type, catId: cat.id, qIndex: idx } : undefined,
   }));
-  const mediaSlots = [];
-  clues.forEach((c, slot) => { if (c.media) mediaSlots.push(slot); });
-  return { clues, mediaSlots };
+  return { clues };
 }
 
 io.on('connection', (socket) => {
@@ -1445,19 +1444,17 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Assemble each round's board in slot order (custom + AI), tracking custom
-    // categories and the media squares that become daily doubles.
+    // Assemble each round's board in slot order (custom + AI), tracking which
+    // categories are custom.
     const singleBoard = {}, doubleBoard = {};
     const singleCrit = {}, doubleCrit = {};
     const customCats = {};
-    const mediaDDs = [];
     const assemble = (slots, round, board, crit, aiMap) => {
       slots.forEach(c => {
         if (c.custom) {
           const built = buildCustomCategory(c.custom);
           board[c.custom.name] = built.clues;
           customCats[round + '|' + c.custom.name] = true;
-          built.mediaSlots.forEach(vi => mediaDDs.push({ round, cat: c.custom.name, valueIndex: vi }));
         } else {
           board[c.name] = aiMap[c.name];
           crit[c.name] = c.criteria;
@@ -1471,14 +1468,11 @@ io.on('connection', (socket) => {
     gameState.board.double = doubleBoard;
     gameState.criteria = { single: singleCrit, double: doubleCrit };
     gameState.customCats = customCats;
-    // Media questions are daily doubles; add the standard random DDs among the
-    // remaining (non-media) squares.
-    const exSingle = new Set(mediaDDs.filter(d => d.round === 'single').map(d => d.cat + '|' + d.valueIndex));
-    const exDouble = new Set(mediaDDs.filter(d => d.round === 'double').map(d => d.cat + '|' + d.valueIndex));
+    // Randomly seed 1 DD in the single round and 2 in the double round. The host
+    // can then add/remove DDs on any square (including media clues) in review.
     gameState.dailyDoubles = [
-      ...mediaDDs,
-      ...pickDailyDoubles(singleBoard, 1, 'single', exSingle),
-      ...pickDailyDoubles(doubleBoard, 2, 'double', exDouble),
+      ...pickDailyDoubles(singleBoard, 1, 'single'),
+      ...pickDailyDoubles(doubleBoard, 2, 'double'),
     ];
     gameState.finalJeopardy = finalClue;
     // Pause on the review screen so the host can vet/edit/regenerate the final
@@ -1565,8 +1559,24 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Host adds/removes a Daily Double on any square during review. Free-form:
+  // no min/max count, so the host has full control over placement (a media
+  // clue can be a DD or a normal clue like any other square).
+  socket.on('toggleDailyDouble', ({ round, name, index }) => {
+    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (round !== 'single' && round !== 'double') return;
+    const clues = gameState.board[round] && gameState.board[round][name];
+    const i = Number(index);
+    if (!Array.isArray(clues) || i < 0 || i >= clues.length || !clues[i]) return;
+    const at = gameState.dailyDoubles.findIndex(
+      dd => dd.round === round && dd.cat === name && dd.valueIndex === i);
+    if (at >= 0) gameState.dailyDoubles.splice(at, 1);
+    else gameState.dailyDoubles.push({ round, cat: name, valueIndex: i });
+    broadcastState();
+  });
+
   // Host edits a single clue's wording and/or answer during review. The clue's
-  // media (custom daily double) and any other props are preserved.
+  // media and any other props are preserved.
   socket.on('editClue', ({ round, name, index, clue, answer }) => {
     if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
     if (round !== 'single' && round !== 'double') return;
@@ -1590,7 +1600,7 @@ io.on('connection', (socket) => {
     const clues = board[name];
     const i = Number(index);
     if (!Array.isArray(clues) || i < 0 || i >= clues.length || !clues[i]) return;
-    if (clues[i].media) return;   // don't regenerate a media daily double
+    if (clues[i].media) return;   // don't regenerate a media clue
     const criteria = (gameState.criteria[round] && gameState.criteria[round][name]) || name;
     const key = round + '|' + name + '|' + i;
     gameState.regeneratingClues[key] = true;

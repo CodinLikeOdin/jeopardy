@@ -1474,12 +1474,17 @@ function updateReviewBoard() {
         const down = i < clues.length - 1
           ? `<button class="rv-arrow" onclick="moveClue('${round}','${escAttr(name)}',${i},'down')" title="Make this clue worth more" ${dis}>▼</button>`
           : `<span class="rv-arrow rv-arrow-empty"></span>`;
-        const mediaBadge = c.media ? `<span class="rv-media-badge" data-media="${escHtml(c.media.catId)}/${c.media.qIndex}">★ ${c.media.type} DD</span>` : '';
-        // Single-clue regenerate: AI categories only, and not a media daily double.
+        const mediaBadge = c.media ? `<span class="rv-media-badge" data-media="${escHtml(c.media.catId)}/${c.media.qIndex}">★ ${c.media.type}</span>` : '';
+        const isDD = !!(state.dailyDoubles && state.dailyDoubles.some(
+          dd => dd.round === round && dd.cat === name && dd.valueIndex === i));
+        const ddToggle = `<label class="rv-dd-toggle ${isDD ? 'rv-dd-on' : ''}" title="Make this square a Daily Double">
+          <input type="checkbox" ${isDD ? 'checked' : ''} onchange="toggleDailyDouble('${round}','${escAttr(name)}',${i})" ${dis}>
+          <span>DD</span></label>`;
+        // Single-clue regenerate: AI categories only, and not a media clue.
         const regenBtn = (!isCustom && !c.media)
           ? `<button class="rv-regen-one" onclick="regenerateClue('${round}','${escAttr(name)}',${i})" title="Regenerate just this clue" ${dis}>${regenOne ? '…' : '⟳'}</button>`
           : `<span class="rv-regen-one rv-regen-empty"></span>`;
-        return `<div class="rv-clue ${regenOne ? 'rv-dim' : ''}">
+        return `<div class="rv-clue ${regenOne ? 'rv-dim' : ''} ${isDD ? 'rv-clue-dd' : ''}">
           <span class="rv-clue-val">$${vals[i]}</span>
           <div class="rv-clue-fields" data-round="${round}" data-name="${escHtml(name)}" data-index="${i}">
             <textarea class="rv-clue-edit rv-clue-q-edit" rows="2" maxlength="600"
@@ -1488,6 +1493,7 @@ function updateReviewBoard() {
             <input class="rv-clue-edit rv-clue-a-edit" type="text" maxlength="200"
               placeholder="Answer" value="${escHtml(c.answer || '')}" oninput="onClueEdit(this)" onblur="onClueBlur(this)" ${dis}>
           </div>
+          ${ddToggle}
           <span class="rv-arrows">${up}${down}</span>
           ${regenBtn}
         </div>`;
@@ -1524,6 +1530,7 @@ function probeMedia(key, cb) {
 
 function regenerateCategory(round, name) { socket.emit('regenerateCategory', { round, name }); }
 function moveClue(round, name, index, dir) { socket.emit('moveClue', { round, name, index, dir }); }
+function toggleDailyDouble(round, name, index) { socket.emit('toggleDailyDouble', { round, name, index }); }
 
 // ── Per-clue editing (debounced) ─────────────────────────────
 // The host can retype any clue/answer; we debounce-emit `editClue`, and flush
@@ -2061,7 +2068,7 @@ function renderCustomEditor() {
       else preview = `<audio class="ce-mediaaud" controls src="${src}"></audio>`;
     }
     return `<div class="ce-q">
-      <div class="ce-qhead">Question ${i + 1}${q.media ? ' <span class="ce-ddbadge">★ media Daily Double</span>' : ''}
+      <div class="ce-qhead">Question ${i + 1}${q.media ? ' <span class="ce-ddbadge">★ media</span>' : ''}
         <button class="ce-del" onclick="removeCustomQ(${i})" title="Remove question">🗑</button></div>
       <textarea id="ceClue${i}" class="rv-input rv-area" rows="2" placeholder="Clue (a statement)">${escHtml(q.clue)}</textarea>
       <input id="ceAns${i}" class="rv-input" type="text" placeholder="Answer (What is …?)" value="${escHtml(q.answer)}">
@@ -2082,7 +2089,7 @@ function renderCustomEditor() {
       <button class="btn btn-secondary" onclick="addCustomQ()">+ Add another question</button>
       <button class="btn btn-primary" onclick="saveCustomCat()">💾 Save Category</button>
     </div>
-    <p class="subtitle">Attaching an image or audio clip makes that question this category's Daily Double. Need at least 5 complete questions.</p>
+    <p class="subtitle">Attach an image or audio clip to any question — it plays as a normal clue. Set Daily Doubles later on the review screen. Need at least 5 complete questions.</p>
   </div>`;
 }
 
