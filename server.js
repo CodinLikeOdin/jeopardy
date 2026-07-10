@@ -573,6 +573,12 @@ async function generateTTS(text) {
 // with a single ElevenLabs call. Keyed by an id that changes per question.
 let currentAudio = null; // { id, buffer }
 
+// Pre-generated clue audio, keyed by the clue/final object itself. Editing or
+// regenerating a clue replaces its object (see setCategories/regenerateClue),
+// so a stale cache entry simply can't be found — no manual invalidation
+// needed. Entries are garbage-collected once a game's board is discarded.
+const clueAudioCache = new WeakMap(); // clueObj -> Buffer
+
 app.get('/api/tts/current', (req, res) => {
   if (!currentAudio) return res.status(404).end();
   res.setHeader('Content-Type', 'audio/mpeg');
@@ -731,7 +737,7 @@ function reopenBuzzers(windowMs) {
 // server-clock time the clue finishes (clueEnd), or null if the question
 // changed while awaiting TTS. Sets audioStartTime so clients reveal/play it.
 async function readCurrentClue(q) {
-  const buffer = useElevenLabs() ? await generateTTS(q.clue) : null;
+  const buffer = useElevenLabs() ? (clueAudioCache.get(q) || await generateTTS(q.clue)) : null;
   if (gameState.currentQuestion !== q) return null;   // replaced/cleared while awaiting
   currentAudio = buffer ? { id: 'a' + Date.now(), buffer } : null;
   const durationMs = buffer
@@ -900,6 +906,14 @@ function startFinalRound() {
   eligible.forEach(id => { gameState.final.reveal[id] = { wager: false, answer: false, judged: null }; });
   gameState.phase = 'final';
   broadcastState();
+  // Generate the Final clue's audio now, while players are wagering, so
+  // revealFinalClue doesn't make them wait on ElevenLabs afterward.
+  if (useElevenLabs()) {
+    const f = gameState.final;
+    generateTTS(f.clue)
+      .then(buffer => { if (buffer && gameState.final === f) clueAudioCache.set(f, buffer); })
+      .catch(e => console.error('final clue audio pregen failed:', e.message));
+  }
 }
 
 // Move Final Jeopardy from the wager stage into the answer stage: read the clue
@@ -910,7 +924,7 @@ async function revealFinalClue(f) {
   f.stage = 'answer';
   broadcastState();
 
-  const buffer = useElevenLabs() ? await generateTTS(f.clue) : null;
+  const buffer = useElevenLabs() ? (clueAudioCache.get(f) || await generateTTS(f.clue)) : null;
   if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
   currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
   const durationMs = buffer
@@ -969,6 +983,21 @@ async function runWithConcurrency(items, limit, fn) {
     while (queue.length) await fn(queue.shift());
   });
   await Promise.all(workers);
+}
+
+// Background-fill clueAudioCache for every clue on a round's board so nobody
+// waits on ElevenLabs mid-question. Fire-and-forget; readCurrentClue falls
+// back to a live call on a cache miss, so failures here are harmless.
+async function preGenerateRoundAudio(round) {
+  if (!useElevenLabs()) return;
+  const board = gameState.board[round];
+  if (!board) return;
+  const clues = Object.values(board).flat();
+  await runWithConcurrency(clues, 4, async (q) => {
+    if (clueAudioCache.has(q)) return;
+    const buffer = await generateTTS(q.clue);
+    if (buffer && gameState.board[round] === board) clueAudioCache.set(q, buffer);
+  });
 }
 
 // Normalize text for comparison: lowercase, drop ALL punctuation, collapse
@@ -1597,6 +1626,11 @@ io.on('connection', (socket) => {
       ? contestants[Math.floor(Math.random() * contestants.length)]
       : null;
     broadcastState();
+    // Pre-generate every clue's audio in the background (singles first, since
+    // they're played first) so nobody waits on ElevenLabs mid-question.
+    preGenerateRoundAudio('single')
+      .then(() => preGenerateRoundAudio('double'))
+      .catch(e => console.error('clue audio pregen failed:', e.message));
   });
 
   // Save the fully-configured board (all categories, clues, DDs, Final) under a
