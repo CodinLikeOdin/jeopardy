@@ -382,20 +382,203 @@ function playFanfare() {
     mkVoice(ctx, fq, t + i * 0.12, 0.34, 'square', 0.18));
 }
 
-// ~1-second celebratory stinger when a Daily Double is revealed.
-function playDailyDoubleStinger() {
-  const ctx = getAudioCtx();
+// ── Daily Double fullscreen reveal (synced 3s intro, ported from the DC scene) ──
+const DD_ANIM_MS = 3000;
+const DD_ACCENT = '#FFC531', DD_ACCENT2 = '#FF3B30';
+let ddRev = null;           // built DOM refs
+let ddRevRAF = null;        // rAF handle
+let ddRevKey = null;        // questionKey currently handled (dedupe)
+let ddFanfareFired = false;
+
+function ddHash(i) { const x = Math.sin(i * 12.9898) * 43758.5453; return x - Math.floor(x); }
+const ddClamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ddEaseIn = t => t * t * t;
+const ddEaseOut = t => 1 - Math.pow(1 - t, 3);
+
+function buildDdReveal() {
+  const a = DD_ACCENT, a2 = DD_ACCENT2;
+  const root = document.createElement('div');
+  root.id = 'ddReveal'; root.className = 'dd-reveal hidden';
+
+  const bg = document.createElement('div'); bg.className = 'dd-rev-bg';
+  bg.style.background = `radial-gradient(ellipse at 50% 45%, ${a2}33 0%, #1a0a06 45%, #050302 100%)`;
+
+  const rays = document.createElement('div'); rays.className = 'dd-rev-rays';
+  rays.style.background = `conic-gradient(from 0deg, ${a2}00 0deg, ${a}55 8deg, ${a2}00 22deg, ${a2}00 40deg, ${a}44 50deg, ${a2}00 62deg, ${a2}00 90deg, ${a}55 98deg, ${a2}00 112deg, ${a2}00 140deg, ${a}44 150deg, ${a2}00 162deg, ${a2}00 190deg, ${a}55 198deg, ${a2}00 212deg, ${a2}00 230deg, ${a}44 240deg, ${a2}00 252deg, ${a2}00 280deg, ${a}55 288deg, ${a2}00 302deg, ${a2}00 330deg, ${a}44 340deg, ${a2}00 352deg, ${a2}00 360deg)`;
+
+  const lightsLayer = document.createElement('div'); lightsLayer.className = 'dd-rev-layer';
+  const lights = [];
+  for (let i = 0; i < 28; i++) {
+    const angle = (i / 28) * Math.PI * 2, r = 47;
+    const el = document.createElement('div'); el.className = 'dd-rev-light';
+    el.style.left = (50 + Math.cos(angle) * r) + '%';
+    el.style.top = (50 + Math.sin(angle) * r * 0.56) + '%';
+    el._phase = ddHash(i) * Math.PI * 2; el._i = i;
+    lightsLayer.appendChild(el); lights.push(el);
+  }
+
+  const sparkLayer = document.createElement('div'); sparkLayer.className = 'dd-rev-layer';
+  const sparks = [];
+  for (let i = 0; i < 22; i++) {
+    const size = 6 + ddHash(i * 5.3) * 10;
+    const el = document.createElement('div'); el.className = 'dd-rev-spark';
+    el.style.left = (6 + ddHash(i * 3.1) * 88) + '%';
+    el.style.top = (8 + ddHash(i * 7.7) * 84) + '%';
+    el.style.width = size + 'px'; el.style.height = size + 'px';
+    el._phase = ddHash(i * 2.2) * Math.PI * 2; el._i = i;
+    sparkLayer.appendChild(el); sparks.push(el);
+  }
+
+  const title = document.createElement('div'); title.className = 'dd-rev-title';
+  const l1 = document.createElement('div'); l1.className = 'dd-rev-l1'; l1.textContent = 'DAILY';
+  const l2 = document.createElement('div'); l2.className = 'dd-rev-l2'; l2.textContent = 'DOUBLE';
+  title.append(l1, l2);
+
+  const flash = document.createElement('div'); flash.className = 'dd-rev-flash';
+  const vign = document.createElement('div'); vign.className = 'dd-rev-vign';
+
+  root.append(bg, rays, lightsLayer, sparkLayer, title, flash, vign);
+  document.body.appendChild(root);
+  ddRev = { root, bg, rays, lights, sparks, title, l1, l2, flash };
+}
+
+function ddRevFrame(t) {
+  const R = ddRev, a = DD_ACCENT, a2 = DD_ACCENT2;
+  const progress = ddClamp(t / (DD_ANIM_MS / 1000), 0, 1);
+  R.bg.style.opacity = 0.9 + 0.1 * (0.5 + 0.5 * Math.sin(t * 3));
+  R.rays.style.transform = `rotate(${t * 26}deg)`;
+
+  for (const el of R.lights) {
+    const on = 0.5 + 0.5 * Math.sin(t * 14 + el._phase + el._i * 0.9);
+    const bright = Math.pow(on, 2.2), hot = bright > 0.55;
+    el.style.background = hot ? '#fff8e0' : a;
+    el.style.opacity = 0.35 + 0.65 * bright;
+    el.style.boxShadow = hot
+      ? `0 0 18px 6px #fff6d0, 0 0 36px 14px ${a}` : `0 0 6px 2px ${a}`;
+  }
+  for (const el of R.sparks) {
+    const twinkle = Math.max(0, Math.sin(t * 5 + el._phase));
+    el.style.opacity = Math.pow(twinkle, 3) * 0.95;
+    el.style.transform = `translate(-50%,-50%) rotate(${t * 60 + el._i * 20}deg)`;
+  }
+
+  const landAt = 0.34, settleAt = 0.46;
+  let scale, opacity, blur, rotate;
+  if (progress < landAt) {
+    const tt = ddEaseIn(ddClamp(progress / landAt, 0, 1));
+    scale = 0.04 + 1.28 * tt; opacity = ddClamp(progress / (landAt * 0.35), 0, 1);
+    blur = 10 * (1 - tt); rotate = (1 - tt) * -6;
+  } else if (progress < settleAt) {
+    const tt = ddEaseOut(ddClamp((progress - landAt) / (settleAt - landAt), 0, 1));
+    scale = 1.32 - 0.32 * tt; opacity = 1; blur = 0; rotate = 0;
+  } else {
+    const idle = (1 - progress > 0.05) ? Math.sin((progress - settleAt) * 16) * 0.02 : 0;
+    scale = 1 + idle; opacity = 1; blur = 0; rotate = 0;
+  }
+  R.title.style.transform = `scale(${scale}) rotate(${rotate}deg)`;
+  R.title.style.filter = `blur(${blur}px)`;
+  R.title.style.opacity = opacity;
+  const glow = 0.6 + 0.4 * Math.sin(progress * 40);
+  R.l1.style.textShadow = `0 0 ${30 * glow}px ${a}, 0 0 ${70 * glow}px ${a2}, 0 10px 0 ${a2}`;
+  R.l2.style.textShadow = `0 0 ${40 * glow}px ${a}, 0 0 ${90 * glow}px ${a2}, 0 14px 0 ${a2}`;
+
+  const startFlash = Math.max(0, 1 - t / 0.12);
+  const rhythmFlash = Math.pow(Math.max(0, Math.sin(t * 9)), 10);
+  R.flash.style.opacity = ddClamp(startFlash * 0.9 + rhythmFlash * 0.35, 0, 1);
+}
+
+function endDdReveal() {
+  if (ddRevRAF) { cancelAnimationFrame(ddRevRAF); ddRevRAF = null; }
+  if (ddRev) ddRev.root.classList.add('hidden');
+}
+
+// Play the 3s reveal for a daily-double question, synced to q.ddAnimStart
+// (server clock). Returns true while the animation is covering the screen.
+function maybeRunDailyDoubleReveal(q, questionKey) {
+  if (!q || !q.isDailyDouble || q.ddAnimStart == null) return false;
+  const start = q.ddAnimStart, endsAt = start + DD_ANIM_MS;
+  if (serverNow() >= endsAt) return false;            // already over (e.g. late join)
+  if (ddRevKey === questionKey) return serverNow() < endsAt;   // already running
+  ddRevKey = questionKey;
+  ddFanfareFired = false;
+  if (!ddRev) buildDdReveal();
+  ddRev.root.classList.remove('hidden');
+  ddRevFrame(0);
+  if (ddRevRAF) cancelAnimationFrame(ddRevRAF);
+  const loop = () => {
+    const localMs = serverNow() - start;
+    if (localMs >= 0 && !ddFanfareFired) { ddFanfareFired = true; playDailyDoubleFanfare(start); }
+    if (localMs >= DD_ANIM_MS) { endDdReveal(); return; }
+    ddRevFrame(Math.max(0, localMs / 1000));
+    ddRevRAF = requestAnimationFrame(loop);
+  };
+  ddRevRAF = requestAnimationFrame(loop);
+  return true;
+}
+
+// Synthesized fanfare for the reveal: rising whoosh -> bell impact -> chimes.
+// Scheduled against the synced start so it lands together on every device.
+function playDailyDoubleFanfare(serverStartTime) {
+  let ctx;
+  try { ctx = getAudioCtx(); } catch (e) { return; }
   if (ctx.state === 'suspended') ctx.resume();
-  const t = ctx.currentTime + 0.02;
-  // Quick rising run...
-  [NOTE.C5, NOTE.E5, NOTE.G5, NOTE.C6].forEach((fq, i) =>
-    mkVoice(ctx, fq, t + i * 0.075, 0.16, 'square', 0.17));
-  // ...into a bright held chord with a sparkle on top.
-  const c = t + 0.30;
-  mkVoice(ctx, NOTE.C6, c, 0.62, 'triangle', 0.14);
-  mkVoice(ctx, NOTE.E5, c, 0.62, 'sawtooth', 0.10);
-  mkVoice(ctx, NOTE.G5, c, 0.62, 'sine', 0.10);
-  mkVoice(ctx, NOTE.C6 * 2, c + 0.04, 0.5, 'triangle', 0.08); // sparkle (C7)
+  const now = ctx.currentTime + Math.max(0.02, (serverStartTime - serverNow()) / 1000);
+  const master = ctx.createGain(); master.gain.value = 0.85; master.connect(ctx.destination);
+
+  const dur = 0.95, bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (i / bufSize);
+  const noise = ctx.createBufferSource(); noise.buffer = buf;
+  const nf = ctx.createBiquadFilter(); nf.type = 'bandpass';
+  nf.frequency.setValueAtTime(400, now);
+  nf.frequency.exponentialRampToValueAtTime(3200, now + dur); nf.Q.value = 0.7;
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(0.0001, now);
+  ng.gain.exponentialRampToValueAtTime(0.5, now + dur * 0.85);
+  ng.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  noise.connect(nf); nf.connect(ng); ng.connect(master);
+  noise.start(now); noise.stop(now + dur);
+
+  const sweep = ctx.createOscillator(); sweep.type = 'sawtooth';
+  sweep.frequency.setValueAtTime(120, now);
+  sweep.frequency.exponentialRampToValueAtTime(900, now + dur);
+  const sg = ctx.createGain();
+  sg.gain.setValueAtTime(0.0001, now);
+  sg.gain.exponentialRampToValueAtTime(0.25, now + dur * 0.9);
+  sg.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  sweep.connect(sg); sg.connect(master);
+  sweep.start(now); sweep.stop(now + dur);
+
+  const impactAt = now + 1.0;
+  [880, 1320, 1760, 2640].forEach((freq, i) => {
+    const osc = ctx.createOscillator(); osc.type = i === 0 ? 'triangle' : 'sine';
+    osc.frequency.value = freq;
+    const g = ctx.createGain(); const peak = i === 0 ? 0.55 : 0.22 / (i + 1);
+    g.gain.setValueAtTime(0.0001, impactAt);
+    g.gain.exponentialRampToValueAtTime(peak, impactAt + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, impactAt + 1.1);
+    osc.connect(g); g.connect(master); osc.start(impactAt); osc.stop(impactAt + 1.15);
+  });
+  const thump = ctx.createOscillator(); thump.type = 'sine';
+  thump.frequency.setValueAtTime(160, impactAt);
+  thump.frequency.exponentialRampToValueAtTime(50, impactAt + 0.25);
+  const tg = ctx.createGain();
+  tg.gain.setValueAtTime(0.7, impactAt);
+  tg.gain.exponentialRampToValueAtTime(0.0001, impactAt + 0.3);
+  thump.connect(tg); tg.connect(master); thump.start(impactAt); thump.stop(impactAt + 0.32);
+
+  const chimeNotes = [1568, 1976, 2349, 2637, 3136];
+  for (let i = 0; i < 7; i++) {
+    const t = impactAt + 0.28 + i * 0.19 + ddHash(i * 4.4) * 0.05;
+    const osc = ctx.createOscillator(); osc.type = 'sine';
+    osc.frequency.value = chimeNotes[i % chimeNotes.length];
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.14, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+    osc.connect(g); g.connect(master); osc.start(t); osc.stop(t + 0.4);
+  }
 }
 
 // ── Game-over theme (elaborate; loops until you leave the screen) ─────────
@@ -1221,6 +1404,7 @@ function renderQuestionModal() {
     modal.classList.add('hidden');
     ensureModalTicker(false);
     cancelSpeech();              // stop browser-voice read-out when the clue clears
+    endDdReveal(); ddRevKey = null;   // drop any lingering DD reveal overlay
     return;
   }
   modal.classList.remove('hidden');
@@ -1230,12 +1414,11 @@ function renderQuestionModal() {
   document.getElementById('modalValue').textContent = q.isDailyDouble ? 'DAILY DOUBLE' : `$${q.dollarValue}`;
   document.getElementById('modalClue').textContent = q.clue;
 
-  // New question? reset the optimistic buzz flag, stinger a DD, set media once.
+  // New question? reset the optimistic buzz flag, set media once.
   const questionKey = `${q.round}|${q.category}|${q.valueIndex}`;
   if (questionKey !== shownQuestionKey) {
     shownQuestionKey = questionKey;
     buzzPending = false;
-    if (q.isDailyDouble) playDailyDoubleStinger();
     const mediaEl = document.getElementById('modalMedia');
     if (q.media) {
       const src = `/api/custommedia/${q.media.catId}/${q.media.qIndex}`;
@@ -1246,6 +1429,8 @@ function renderQuestionModal() {
       mediaEl.innerHTML = '';
     }
   }
+  // Daily double: play the synced fullscreen reveal before the wager UI (deduped).
+  maybeRunDailyDoubleReveal(q, questionKey);
   // Schedule synced audio on EVERY device (deduped internally per question)
   scheduleClueAudio();
   // Drive clue-text reveal, BUZZ-NOW cue, and buzz button off the synced clock

@@ -629,6 +629,8 @@ const REARM_MS = 1000;         // synced "get ready" before buzzers re-arm on re
 const SETTLE_MS = 250;         // collect near-simultaneous buzzes, then pick earliest
 const LOCKOUT_MS = 250;        // early/mash penalty
 const DD_TIMEOUT_MS = 20000;   // daily double answer window
+const DD_ANIM_LEAD_MS = 600;   // sync lead so the DD reveal animation starts together on all devices
+const DD_ANIM_MS = 3000;       // duration of the "Daily Double" reveal before the wager UI
 const DEFAULT_FINAL_MS = 30000; // default Final Jeopardy answer window
 const FINAL_PAUSE_MS = 1000;    // beat between the final clue ending and the timer/music
 
@@ -1868,6 +1870,9 @@ io.on('connection', (socket) => {
     gameState.currentQuestion = {
       round, category, valueIndex, dollarValue,
       clue: clue.clue, answer: clue.answer, media: clue.media || null, isDailyDouble,
+      // Synced start for the fullscreen "Daily Double" reveal animation; the
+      // wager UI takes over once it finishes (DD_ANIM_MS later).
+      ddAnimStart: isDailyDouble ? Date.now() + DD_ANIM_LEAD_MS : null,
       bannedPlayers: [],
     };
     gameState.buzzers = [];

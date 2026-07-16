@@ -1187,3 +1187,32 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   background: rgba(0,0,0,0.35); color: #fff; border: 1px solid rgba(255,255,255,0.25);
 }
 .dd-score-ctrl { background: #F5A623; color: #000; border-color: #F5A623; }
+
+/* ── Daily Double fullscreen reveal (synced 3s intro) ───────────────────── */
+.dd-reveal { position: fixed; inset: 0; z-index: 9999; overflow: hidden; background: #050302; }
+.dd-reveal.hidden { display: none; }
+.dd-rev-bg { position: absolute; inset: 0; }
+.dd-rev-rays { position: absolute; inset: -30%; mix-blend-mode: screen; opacity: 0.85; will-change: transform; }
+.dd-rev-layer { position: absolute; inset: 0; pointer-events: none; }
+.dd-rev-light { position: absolute; width: 14px; height: 14px; transform: translate(-50%,-50%); border-radius: 50%; background: #FFC531; }
+.dd-rev-spark {
+  position: absolute; background: #fffbe8; transform: translate(-50%,-50%);
+  clip-path: polygon(50% 0%,63% 38%,100% 50%,63% 62%,50% 100%,37% 62%,0% 50%,37% 38%);
+  box-shadow: 0 0 8px #fff3c0; opacity: 0;
+}
+.dd-rev-title {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0.4vw; will-change: transform;
+}
+.dd-rev-l1 {
+  font-family: 'Arial Black', Helvetica, sans-serif; font-weight: 900;
+  font-size: 7.2vw; letter-spacing: 0.01em; line-height: 1;
+  color: #fff8df; -webkit-text-stroke: 3px #FF3B30;
+}
+.dd-rev-l2 {
+  font-family: 'Arial Black', Helvetica, sans-serif; font-weight: 900;
+  font-size: 10.5vw; letter-spacing: 0.01em; line-height: 1;
+  color: #FFC531; -webkit-text-stroke: 4px #FF3B30;
+}
+.dd-rev-flash { position: absolute; inset: 0; background: #fffdf5; mix-blend-mode: screen; opacity: 0; }
+.dd-rev-vign { position: absolute; inset: 0; box-shadow: inset 0 0 18vw 4vw rgba(0,0,0,0.55); }
