@@ -188,11 +188,11 @@ function retryClueAudio() {
 // Voice mode chosen by the host at setup: 'elevenlabs' | 'browser' | 'off'.
 function voiceMode() { return (state && state.settings && state.settings.voiceMode) || 'elevenlabs'; }
 
-// Free browser TTS fallback. Only the HOST device speaks (it's the announcer),
-// so phones in the room don't talk over each other. Scheduled to the synced
-// clue-start moment.
+// Free browser TTS fallback, scheduled to the synced clue-start moment. EVERY
+// device speaks (so a remote player hears the clue on their own phone); devices
+// sharing a room can just mute the extras. Voices/rate differ per device, so
+// same-room playback won't be perfectly in unison — muting is the fix.
 function speakClue(text, atServerTime) {
-  if (!isHost) return;
   if (!('speechSynthesis' in window) || !text) return;
   const go = () => {
     try {
@@ -225,15 +225,15 @@ async function scheduleClueAudio() {
 
   const mode = voiceMode();
   if (mode === 'off') { setAudioStatus(''); return; }            // silent (testing — no credits)
-  if (mode === 'browser') {                                      // free browser voice (host speaks)
-    setAudioStatus(isHost ? '🔊 Browser voice' : '');
+  if (mode === 'browser') {                                      // free browser voice (every device speaks)
+    setAudioStatus('🔊 Browser voice');
     speakClue(q.clue, state.audioStartTime);
     return;
   }
 
   // Premium ElevenLabs; fall back to the browser voice if it's unavailable.
   const fallback = () => {
-    setAudioStatus(isHost ? '🔊 Browser voice (ElevenLabs out)' : '🔇 Listen to the host');
+    setAudioStatus('🔊 Browser voice (ElevenLabs out)');
     speakClue(q.clue, state.audioStartTime);
   };
   setAudioStatus('♪ loading clue audio…');
