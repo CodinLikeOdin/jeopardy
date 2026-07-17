@@ -12,8 +12,8 @@ function dismissTitleScreen() {
 (function initTitleScreen() {
   const screen = document.getElementById('titleScreen');
   if (!screen) { titleScreenDone = true; return; }
-  const isHostUrl = /\/host\/?$/i.test(window.location.pathname);
-  if (isHostUrl) { screen.remove(); titleScreenDone = true; return; }   // host: straight to setup, no splash
+  const skipSplash = /\/(host|display)\/?$/i.test(window.location.pathname);
+  if (skipSplash) { screen.remove(); titleScreenDone = true; return; }   // host/display: straight to the live view, no splash
   const canvas = document.getElementById('particleCanvas');
   const ctx = canvas.getContext('2d');
 
@@ -118,6 +118,7 @@ function updateTitleGate() {
 const socket = io();
 let myId = null;
 let isHost = false;
+let isDisplay = false;        // passive big-screen view: watches like a player, but never joins (no buzzer, not on the scoreboard)
 let myName = null;            // remembered so we can re-join after a reconnect
 let lastHostClaim = 0;        // throttles the host self-heal re-claim
 let state = null;
@@ -725,24 +726,37 @@ socket.on('rejoin', () => {
   if (myName) socket.emit('join', { name: myName, isHost });
 });
 
-// Role is decided by the URL: /host → host console; anything else → player.
+// Role is decided by the URL: /host → host console; /display → passive
+// big-screen view; anything else → player.
 const IS_HOST_URL = /\/host\/?$/i.test(window.location.pathname);
+const IS_DISPLAY_URL = /\/display\/?$/i.test(window.location.pathname);
 isHost = IS_HOST_URL;
+isDisplay = IS_DISPLAY_URL;
+// Audio can't autoplay without a gesture; on host/display (no "Enter" button)
+// unlock on the first tap/key so synced clue audio & fanfares can play.
+function unlockAudioOnFirstGesture() {
+  const unlockOnce = () => {
+    unlockAudio();
+    document.removeEventListener('pointerdown', unlockOnce);
+    document.removeEventListener('keydown', unlockOnce);
+  };
+  document.addEventListener('pointerdown', unlockOnce);
+  document.addEventListener('keydown', unlockOnce);
+}
 (function initRole() {
-  if (IS_HOST_URL) {
+  if (IS_DISPLAY_URL) {
+    // Display: watch-only. Never join (so no player entry / no buzzer / not on
+    // the scoreboard); just receive the redacted broadcast like a contestant.
+    const landing = document.getElementById('landing');
+    if (landing) landing.classList.add('hidden');
+    unlockAudioOnFirstGesture();
+  } else if (IS_HOST_URL) {
     // Host: skip the title + join button entirely — go straight to setup.
     const landing = document.getElementById('landing');
     if (landing) landing.classList.add('hidden');
     myName = 'Host';
     socket.emit('join', { name: 'Host', isHost: true });   // (re)emitted on connect too
-    // No "Enter" button to unlock audio, so unlock on the host's first gesture.
-    const unlockOnce = () => {
-      unlockAudio();
-      document.removeEventListener('pointerdown', unlockOnce);
-      document.removeEventListener('keydown', unlockOnce);
-    };
-    document.addEventListener('pointerdown', unlockOnce);
-    document.addEventListener('keydown', unlockOnce);
+    unlockAudioOnFirstGesture();
   } else {
     const ph = document.getElementById('landingPlayer');
     const ho = document.getElementById('landingHost');
@@ -807,7 +821,7 @@ socket.on('state', (s) => {
     socket.emit('join', { name: 'Host', isHost: true });
   }
   updateTitleGate();     // guests wait on the title screen until questions are generated
-  if (myId) render();
+  if (myId || isDisplay) render();   // a display never joins (no myId) but still renders every broadcast
 });
 
 // Nobody buzzed within the time limit — play the "nobody got it" buzzers
@@ -955,7 +969,7 @@ function renderJudgingPanel() {
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
-  if (isHost) { btn.classList.add('hidden'); return; }   // host runs the board, never buzzes
+  if (isHost || isDisplay) { btn.classList.add('hidden'); return; }   // host runs the board; display just watches — neither buzzes
 
   const q = state && state.currentQuestion;
   if (!q || !state.buzzOpen || q.isDailyDouble || q.revealed) {

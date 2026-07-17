@@ -17,6 +17,13 @@ app.use(express.json());
 // and runs in host mode (no host/player choice on the shared player link).
 app.get('/host', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+// Display URL — a passive big-screen/spectator view (e.g. a TV in the room).
+// Sees the same redacted view as contestants, but never joins as a player, so
+// it has no buzzer and never appears on the scoreboard. Server needs no special
+// handling: any non-host socket already receives the redacted broadcast; a
+// display simply never sends `join`.
+app.get('/display', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
 const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
 
 // ── Persistent topic pool ────────────────────────────────────
