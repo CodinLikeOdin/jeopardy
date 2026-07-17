@@ -1353,13 +1353,6 @@ io.on('connection', (socket) => {
       const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
       gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost };
     }
-    // If the game is already in play but nobody holds the board (the host started
-    // before any contestant joined, so the beginRounds seed had no one to pick),
-    // hand control to the first contestant to arrive — so board control is set
-    // before they ever reach a question, per the intended design.
-    if (['single', 'double'].includes(gameState.phase) && !gameState.players[gameState.boardControl]) {
-      gameState.boardControl = socket.id;
-    }
     socket.emit('joined', { id: socket.id });
     broadcastState();
   });
@@ -1876,18 +1869,6 @@ io.on('connection', (socket) => {
 
     const isDailyDouble =
       gameState.dailyDoubles.some(dd => dd.round === round && dd.cat === category && dd.valueIndex === valueIndex);
-
-    // A Daily Double is wagered/judged against the controlling contestant. If
-    // nobody currently holds the board (game started before anyone joined, the
-    // seeded player left, etc.), boardControl can be null or point to a gone
-    // socket — which leaves the host no one to judge. Guarantee a valid, present
-    // contestant so the very first DD is always playable.
-    if (isDailyDouble && !gameState.players[gameState.boardControl]) {
-      const contestants = Object.keys(gameState.players);
-      gameState.boardControl = contestants.length
-        ? contestants[Math.floor(Math.random() * contestants.length)]
-        : null;
-    }
 
     clearQuestionTimeout();
     lockUntil = {};
