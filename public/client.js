@@ -254,7 +254,12 @@ async function scheduleClueAudio() {
       started = true;
       el.play()
         .then(() => setAudioStatus(''))                       // playing — hide indicator
-        .catch(() => setAudioStatus('🔊 Tap here to hear the clue', true));
+        .catch(() => {
+          // On the display, never nag per-clue — surface the one-time sound gate
+          // instead (a single tap unlocks audio for the rest of the session).
+          if (isDisplay) { setAudioStatus(''); ensureDisplaySoundGate(); }
+          else setAudioStatus('🔊 Tap here to hear the clue', true);
+        });
     };
     const delayMs = state.audioStartTime - serverNow();
     if (delayMs > 30) setTimeout(go, delayMs); else go();
@@ -674,7 +679,9 @@ function showWinnerOverlay(id, name) {
 }
 
 // ── Connection ──────────────────────────────────────────────
+let audioUnlocked = false;
 function unlockAudio() {
+  audioUnlocked = true;              // called from a user gesture → element/context can now play
   // Unlock Web Audio (used for the buzzer)
   try {
     const ctx = getAudioCtx();
@@ -743,13 +750,32 @@ function unlockAudioOnFirstGesture() {
   document.addEventListener('pointerdown', unlockOnce);
   document.addEventListener('keydown', unlockOnce);
 }
+// The display is a passive screen that may never get tapped, but browsers block
+// audio autoplay until a gesture. Show a clear one-time "tap to enable sound"
+// gate; the first tap unlocks audio for the whole session so every clue then
+// plays automatically (no per-clue prompt).
+function ensureDisplaySoundGate() {
+  if (!isDisplay || audioUnlocked || document.getElementById('displaySoundGate')) return;
+  const gate = document.createElement('div');
+  gate.id = 'displaySoundGate';
+  gate.innerHTML = `<div class="dsg-inner"><div class="dsg-icon">🔊</div><div>Tap anywhere to enable sound</div></div>`;
+  const unlock = () => {
+    unlockAudio();
+    gate.remove();
+    document.removeEventListener('pointerdown', unlock);
+    document.removeEventListener('keydown', unlock);
+  };
+  document.addEventListener('pointerdown', unlock);
+  document.addEventListener('keydown', unlock);
+  document.body.appendChild(gate);
+}
 (function initRole() {
   if (IS_DISPLAY_URL) {
     // Display: watch-only. Never join (so no player entry / no buzzer / not on
     // the scoreboard); just receive the redacted broadcast like a contestant.
     const landing = document.getElementById('landing');
     if (landing) landing.classList.add('hidden');
-    unlockAudioOnFirstGesture();
+    ensureDisplaySoundGate();
   } else if (IS_HOST_URL) {
     // Host: skip the title + join button entirely — go straight to setup.
     const landing = document.getElementById('landing');
