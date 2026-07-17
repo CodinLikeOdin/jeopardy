@@ -1353,6 +1353,13 @@ io.on('connection', (socket) => {
       const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
       gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost };
     }
+    // If the game is already in play but nobody holds the board (the host started
+    // before any contestant joined, so the beginRounds seed had no one to pick),
+    // hand control to the first contestant to arrive — so board control is set
+    // before they ever reach a question, per the intended design.
+    if (['single', 'double'].includes(gameState.phase) && !gameState.players[gameState.boardControl]) {
+      gameState.boardControl = socket.id;
+    }
     socket.emit('joined', { id: socket.id });
     broadcastState();
   });
