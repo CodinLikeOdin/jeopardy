@@ -1990,13 +1990,13 @@ function updateFinalView(f, role) {
             <div class="spot-label" id="spotScoreLabel">Score</div>
             <div class="spot-num spot-score" id="spotScore">$${oldScore.toLocaleString()}</div>
           </div>
-          <div class="spot-stat hidden" id="spotAnswerRow">
-            <div class="spot-label">Answer</div>
-            <div class="spot-answer">${ansText}</div>
-          </div>
           <div class="spot-stat hidden" id="spotWagerRow">
             <div class="spot-label">Wager</div>
             <div class="spot-num spot-wager-num">$${wager.toLocaleString()}</div>
+          </div>
+          <div class="spot-stat hidden" id="spotAnswerRow">
+            <div class="spot-label">Answer</div>
+            <div class="spot-answer">${ansText}</div>
           </div>
           <div class="spot-result hidden" id="spotResult"></div>`;
       }
@@ -2016,8 +2016,8 @@ function updateFinalView(f, role) {
       const ctrls = document.getElementById('fSpotControls');
       if (ctrls) {
         if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
-        else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
         else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
+        else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
         else if (!judged) ctrls.innerHTML =
           `<button class="award-btn award-correct" onclick="judgeFinal('${id}', true)">✓ Correct</button>
            <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)">✗ Wrong</button>`;
