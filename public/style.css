@@ -1145,6 +1145,21 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 #hostStartOver:hover { background: #1a1a4e; }
 
+#hostHardReset {
+  position: fixed;
+  top: 48px; right: 10px;
+  z-index: 950;
+  padding: 6px 12px;
+  border: 2px solid #e74c3c;
+  border-radius: 8px;
+  background: rgba(0,0,20,0.85);
+  color: #ff8a7a;
+  font-weight: bold;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+#hostHardReset:hover { background: #4e1a1a; }
+
 /* Host setup: ephemeral-storage warning banner */
 #storageWarn {
   max-width: 860px;

@@ -1281,6 +1281,10 @@ function render() {
   // Host always has an escape hatch back to setup once a game is underway.
   const so = document.getElementById('hostStartOver');
   if (so) so.classList.toggle('hidden', !(isHost && state.phase !== 'setup' && state.phase !== 'lobby'));
+  // Hard reset is a host escape hatch available in EVERY phase (including a
+  // wedged setup/lobby with ghost players), so no phase restriction here.
+  const hr = document.getElementById('hostHardReset');
+  if (hr) hr.classList.toggle('hidden', !isHost);
 
   if (state.phase === 'setup' && isHost && !categoriesPreloaded) {
     categoriesPreloaded = true;
@@ -2386,6 +2390,15 @@ function startOver() {
   if (!confirm('Start over? This clears the current game and takes you back to the topic setup screen.')) return;
   categoriesPreloaded = false;   // force a fresh topic screen (re-preload defaults)
   socket.emit('resetGame');
+}
+
+// Full wipe: unlike Start Over, this ALSO removes every player (including ghost
+// players left over from a past session) and their photos/scores — a true
+// factory reset without restarting the server. Use it when the game is wedged.
+function hardReset() {
+  if (!confirm('HARD RESET?\n\nThis removes ALL players (including leftover ones from a past game), scores, and photos, and returns to a blank topic setup. Use this only when the game is stuck.')) return;
+  categoriesPreloaded = false;   // force a fresh topic screen (re-preload defaults)
+  socket.emit('hardReset');
 }
 
 function submitWager(max) {

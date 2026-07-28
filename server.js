@@ -24,6 +24,20 @@ app.get('/host', (req, res) => res.sendFile(path.join(__dirname, 'public', 'inde
 // display simply never sends `join`.
 app.get('/display', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+// Force a hard reset from any browser/phone — the escape hatch for when the
+// game is wedged (e.g. stale host socket, ghost players) and the host UI button
+// can't be trusted. Wipes all state, then nudges every connected client to
+// re-join so the host re-binds and lands on a fresh setup screen. GET so it can
+// be triggered by just visiting the URL. Safe to hit repeatedly.
+function doHttpHardReset(req, res) {
+  hardReset();
+  io.emit('rejoin');       // connected clients re-announce; host re-binds hostId
+  broadcastState();
+  res.json({ ok: true, message: 'Game hard-reset. Reload /host to start a new game.' });
+}
+app.get('/api/hard-reset', doHttpHardReset);
+app.post('/api/hard-reset', doHttpHardReset);
+
 const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
 
 // ── Persistent topic pool ────────────────────────────────────
@@ -828,6 +842,17 @@ function resetGame() {
     finalRegenerating: false,
     final: null,
   };
+}
+
+// Full "factory reset" — everything resetGame() clears PLUS the roster, photos,
+// and any lingering audio. Unlike the soft resetGame/Start Over (which keeps
+// players so scores carry into a rematch), this drops every player — including
+// disconnected ghosts from past sessions — so the app returns to a truly fresh
+// state without restarting the Node process. hostId is left null; connected
+// clients are nudged to re-join (see the callers), which re-binds the host.
+function hardReset() {
+  resetGame();
+  photos = {};
 }
 
 // Strip everything a contestant must not see from a state clone: clue/answer
@@ -2053,6 +2078,18 @@ io.on('connection', (socket) => {
     gameState.finalJeopardy = null;
     gameState.finalRegenerating = false;
     gameState.final = null;
+    gameState.phase = 'setup';
+    broadcastState();
+  });
+
+  // Hard reset: wipe EVERYTHING (roster, scores, photos, board) to a fresh
+  // state, then drop the host straight onto the setup screen. Use this when the
+  // game is wedged with ghost players from a past session; unlike Start Over it
+  // does not preserve players. Keeps the requesting socket bound as host.
+  socket.on('hardReset', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    hardReset();
+    gameState.hostId = socket.id;   // stay bound (hardReset nulled it)
     gameState.phase = 'setup';
     broadcastState();
   });
