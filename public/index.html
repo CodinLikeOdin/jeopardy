@@ -67,7 +67,7 @@
       <div class="setup-columns">
         <div class="card">
           <h2>Single Jeopardy</h2>
-          <p class="subtitle">$100 – $500</p>
+          <p class="subtitle">$200 – $1000</p>
           <div class="cat-block single-block"><div class="cat-row"><input class="cat-name single-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria single-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
           <div class="cat-block single-block"><div class="cat-row"><input class="cat-name single-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria single-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
           <div class="cat-block single-block"><div class="cat-row"><input class="cat-name single-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria single-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
@@ -77,7 +77,7 @@
         </div>
         <div class="card">
           <h2>Double Jeopardy</h2>
-          <p class="subtitle">$200 – $1000</p>
+          <p class="subtitle">$400 – $2000</p>
           <div class="cat-block double-block"><div class="cat-row"><input class="cat-name double-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria double-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
           <div class="cat-block double-block"><div class="cat-row"><input class="cat-name double-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria double-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
           <div class="cat-block double-block"><div class="cat-row"><input class="cat-name double-name" type="text" placeholder="Category name" maxlength="40"><button class="btn-reroll" onclick="rerollOne(this)" title="Random topic">⟳</button><button class="btn-reroll btn-add" onclick="addTopicFromRow(this)" title="Save to pool">➕</button><button class="btn-reroll btn-del" onclick="deleteTopicFromRow(this)" title="Remove from pool">🗑</button></div><input class="cat-criteria double-criteria" type="text" placeholder="Question criteria (optional)" maxlength="200"></div>
@@ -125,6 +125,7 @@
         <button class="btn btn-secondary" onclick="rerollAll()">⟳ Randomize All</button>
         <button class="btn btn-secondary" onclick="openCustomEditor()">✎ Custom Categories</button>
         <button class="btn btn-secondary" onclick="openBoardPicker()" title="Reload a previously saved board">📂 Load Saved Board</button>
+        <button id="clearPlayersBtn" class="btn btn-secondary" onclick="clearPlayers()" title="Remove all contestants from the roster (e.g. leftover players from a past game). They'll re-appear when they rejoin.">👥 Clear Players</button>
         <button id="warmPoolBtn" class="btn btn-secondary" onclick="warmPool(false)" title="Pre-generate &amp; cache questions for saved topics that don't have any yet, so games cost no AI tokens">⚡ Pre-generate Pool</button>
         <button id="refreshPoolBtn" class="btn btn-secondary" onclick="warmPool(true)" title="Regenerate cached questions for EVERY saved topic (spends tokens) — use to upgrade older/smaller banks">♻️ Refresh All Banks</button>
         <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>

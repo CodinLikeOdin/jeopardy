@@ -1889,7 +1889,7 @@ io.on('connection', (socket) => {
 
     const board = round === 'single' ? gameState.board.single : gameState.board.double;
     const clue = board[category][valueIndex];
-    const values = round === 'single' ? [100,200,300,400,500] : [200,400,600,800,1000];
+    const values = round === 'single' ? [200,400,600,800,1000] : [400,800,1200,1600,2000];
     const dollarValue = values[valueIndex];
 
     const isDailyDouble =
@@ -2091,6 +2091,19 @@ io.on('connection', (socket) => {
     hardReset();
     gameState.hostId = socket.id;   // stay bound (hardReset nulled it)
     gameState.phase = 'setup';
+    broadcastState();
+  });
+
+  // Empty the contestant roster (and their photos/board control) WITHOUT touching
+  // the categories, board, or settings — so stale/ghost players left over from a
+  // past session can be cleared before a new game. Genuinely-connected players
+  // are nudged to re-announce themselves; ghosts (dead sockets) simply won't.
+  socket.on('clearPlayers', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    gameState.players = {};
+    photos = {};
+    gameState.boardControl = null;
+    io.emit('rejoin');            // any live contestant re-joins fresh; ghosts don't
     broadcastState();
   });
 

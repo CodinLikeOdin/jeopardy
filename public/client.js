@@ -1286,6 +1286,10 @@ function render() {
   const hr = document.getElementById('hostHardReset');
   if (hr) hr.classList.toggle('hidden', !isHost);
 
+  // Keep the "Clear Players" button labeled with the current roster size.
+  const cpb = document.getElementById('clearPlayersBtn');
+  if (cpb) { const n = Object.keys(state.players || {}).length; cpb.textContent = `👥 Clear Players (${n})`; }
+
   if (state.phase === 'setup' && isHost && !categoriesPreloaded) {
     categoriesPreloaded = true;
     clearSetupFields();     // clean slate (also resets fields after Start Over)
@@ -1386,7 +1390,7 @@ function renderLobby() {
 function renderGame() {
   const round = state.phase;
   const board = round === 'single' ? state.board.single : state.board.double;
-  const values = round === 'single' ? [100,200,300,400,500] : [200,400,600,800,1000];
+  const values = round === 'single' ? [200,400,600,800,1000] : [400,800,1200,1600,2000];
   const label = round === 'single' ? 'SINGLE JEOPARDY' : 'DOUBLE JEOPARDY';
 
   document.getElementById('roundLabel').textContent = label;
@@ -1688,7 +1692,7 @@ function updateReviewBoard() {
   el.innerHTML = rounds.map(([round, label]) => {
     const board = state.board && state.board[round];
     if (!board) return '';
-    const vals = round === 'single' ? [100, 200, 300, 400, 500] : [200, 400, 600, 800, 1000];
+    const vals = round === 'single' ? [200, 400, 600, 800, 1000] : [400, 800, 1200, 1600, 2000];
     return `<div class="rv-round"><h3>${label}</h3>` + Object.keys(board).map(name => {
       const regen = !!(state.regenerating && state.regenerating[round + '|' + name]);
       const isCustom = !!(state.customCats && state.customCats[round + '|' + name]);
@@ -1986,13 +1990,13 @@ function updateFinalView(f, role) {
             <div class="spot-label" id="spotScoreLabel">Score</div>
             <div class="spot-num spot-score" id="spotScore">$${oldScore.toLocaleString()}</div>
           </div>
-          <div class="spot-stat hidden" id="spotWagerRow">
-            <div class="spot-label">Wager</div>
-            <div class="spot-num spot-wager-num">$${wager.toLocaleString()}</div>
-          </div>
           <div class="spot-stat hidden" id="spotAnswerRow">
             <div class="spot-label">Answer</div>
             <div class="spot-answer">${ansText}</div>
+          </div>
+          <div class="spot-stat hidden" id="spotWagerRow">
+            <div class="spot-label">Wager</div>
+            <div class="spot-num spot-wager-num">$${wager.toLocaleString()}</div>
           </div>
           <div class="spot-result hidden" id="spotResult"></div>`;
       }
@@ -2012,8 +2016,8 @@ function updateFinalView(f, role) {
       const ctrls = document.getElementById('fSpotControls');
       if (ctrls) {
         if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
-        else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
         else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
+        else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
         else if (!judged) ctrls.innerHTML =
           `<button class="award-btn award-correct" onclick="judgeFinal('${id}', true)">✓ Correct</button>
            <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)">✗ Wrong</button>`;
@@ -2399,6 +2403,15 @@ function hardReset() {
   if (!confirm('HARD RESET?\n\nThis removes ALL players (including leftover ones from a past game), scores, and photos, and returns to a blank topic setup. Use this only when the game is stuck.')) return;
   categoriesPreloaded = false;   // force a fresh topic screen (re-preload defaults)
   socket.emit('hardReset');
+}
+
+// Clear just the contestant roster (keeps your category setup / board). Handy
+// when leftover players from a past session are still listed. Live players will
+// re-appear as they rejoin.
+function clearPlayers() {
+  const n = state && state.players ? Object.keys(state.players).length : 0;
+  if (!confirm(`Remove all ${n} contestant${n === 1 ? '' : 's'} from the roster?\n\nAnyone still connected will rejoin automatically; leftover/ghost players will be gone.`)) return;
+  socket.emit('clearPlayers');
 }
 
 function submitWager(max) {
