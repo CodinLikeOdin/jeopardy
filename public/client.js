@@ -192,8 +192,8 @@ function voiceMode() { return (state && state.settings && state.settings.voiceMo
 // device speaks (so a remote player hears the clue on their own phone); devices
 // sharing a room can just mute the extras. Voices/rate differ per device, so
 // same-room playback won't be perfectly in unison — muting is the fix.
-function speakClue(text, atServerTime) {
-  if (!('speechSynthesis' in window) || !text) return;
+function speakClue(text, atServerTime, onEnd) {
+  if (!('speechSynthesis' in window) || !text) { if (onEnd) onEnd(); return; }
   const go = () => {
     try {
       window.speechSynthesis.cancel();
@@ -201,11 +201,21 @@ function speakClue(text, atServerTime) {
       u.rate = 0.98; u.pitch = 0.9;
       const v = pickAnnouncerVoice();
       if (v) u.voice = v;
+      if (onEnd) u.onend = onEnd;   // e.g. play an audio clue's clip once the read-out finishes
       window.speechSynthesis.speak(u);
-    } catch (e) { /* ignore */ }
+    } catch (e) { if (onEnd) onEnd(); }
   };
   const delay = (atServerTime != null) ? atServerTime - serverNow() : 0;
   if (delay > 30) setTimeout(go, delay); else go();
+}
+
+// Play an audio clue's uploaded clip (the <audio> in the question modal). Called
+// after the narrator finishes reading the clue text so the two don't overlap.
+function playClueMediaAudio() {
+  const el = document.querySelector('#modalMedia .modal-media-aud');
+  if (!el) return;
+  try { el.currentTime = 0; } catch (e) {}
+  el.play().catch(() => {});
 }
 function pickAnnouncerVoice() {
   try {
@@ -223,18 +233,32 @@ async function scheduleClueAudio() {
   if (key === activeAudioKey) return;   // already scheduled for this question
   activeAudioKey = key;
 
+  // For an audio clue, hold the uploaded clip until the narrator has finished
+  // reading the clue text, then auto-play it (so they don't talk over the clip).
+  const isAudioClue = !!(q.media && q.media.type === 'audio');
+  const afterNarration = () => { if (isAudioClue) playClueMediaAudio(); };
+
   const mode = voiceMode();
-  if (mode === 'off') { setAudioStatus(''); return; }            // silent (testing — no credits)
+  if (mode === 'off') {                                          // silent (testing — no credits)
+    setAudioStatus('');
+    // No narrator: approximate when a read-through would end, then play the clip.
+    if (isAudioClue) {
+      const estMs = Math.ceil(q.clue.length / 12 * 1000) + 1500;
+      const d = state.audioStartTime + estMs - serverNow();
+      if (d > 30) setTimeout(afterNarration, d); else afterNarration();
+    }
+    return;
+  }
   if (mode === 'browser') {                                      // free browser voice (every device speaks)
     setAudioStatus('🔊 Browser voice');
-    speakClue(q.clue, state.audioStartTime);
+    speakClue(q.clue, state.audioStartTime, afterNarration);
     return;
   }
 
   // Premium ElevenLabs; fall back to the browser voice if it's unavailable.
   const fallback = () => {
     setAudioStatus('🔊 Browser voice (ElevenLabs out)');
-    speakClue(q.clue, state.audioStartTime);
+    speakClue(q.clue, state.audioStartTime, afterNarration);
   };
   setAudioStatus('♪ loading clue audio…');
   try {
@@ -248,6 +272,8 @@ async function scheduleClueAudio() {
     el.muted = false;
     el.src = clueAudioUrl;
     el.load();
+    // Play the clip when the narration MP3 finishes (cleared for non-audio clues).
+    el.onended = isAudioClue ? () => { el.onended = null; afterNarration(); } : null;
     let started = false;
     const go = () => {
       if (started) return;
@@ -637,6 +663,7 @@ async function playClueAudioAt(startTime, fallbackText) {
     clueAudioUrl = URL.createObjectURL(blob);
     const el = getClueAudioEl();
     el.muted = false;
+    el.onended = null;                 // Final has no media clip — drop any prior clue's handler
     el.src = clueAudioUrl; el.load();
     let started = false;
     const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
