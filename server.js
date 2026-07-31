@@ -522,7 +522,7 @@ app.get('/api/storage/diag', async (req, res) => {
     if (gistReadStatus === 401 || gistWriteStatus === 401) {
       gistHint = gistTokenKind.startsWith('fine-grained')
         ? 'GIST_TOKEN is a fine-grained PAT — GitHub does NOT allow those to access Gists. Create a CLASSIC token (ghp_…) with the "gist" scope and set it as GIST_TOKEN on Render.'
-        : '401 = GIST_TOKEN is invalid/expired or missing the "gist" scope. Regenerate a CLASSIC token with the "gist" scope.';
+        : '401 = GitHub rejected the token itself (expired, revoked, or mistyped) — NOT a scope problem (that would be 403/404). The token was likely auto-revoked after being exposed. Generate a NEW classic token (ghp_…) with the "gist" scope and update GIST_TOKEN on Render.';
     } else if (gistReadStatus === 404) {
       gistHint = '404 = the token is valid but cannot see GIST_ID (wrong id, or the gist belongs to another account).';
     }
