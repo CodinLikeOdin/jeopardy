@@ -35,8 +35,8 @@ function doHttpHardReset(req, res) {
   broadcastState();
   res.json({ ok: true, message: 'Game hard-reset. Reload /host to start a new game.' });
 }
-app.get('/api/hard-reset', doHttpHardReset);
-app.post('/api/hard-reset', doHttpHardReset);
+app.get('/api/hard-reset', requireAccess, doHttpHardReset);
+app.post('/api/hard-reset', requireAccess, doHttpHardReset);
 
 const CATEGORIES_PATH = path.join(__dirname, 'categories.json');
 
@@ -57,6 +57,32 @@ const useGist = !!(GIST_TOKEN && GIST_ID);
 const MEDIA_REPO = process.env.MEDIA_REPO;
 const MEDIA_TOKEN = process.env.MEDIA_TOKEN || GIST_TOKEN;
 const useMediaRepo = !!(MEDIA_REPO && MEDIA_TOKEN);
+
+// Access control (optional). JOIN_CODE gates entry for everyone (players +
+// display); HOST_PASSWORD additionally gates the host role. If neither is set
+// the game is fully open (local dev / backward compatible). A correct
+// HOST_PASSWORD also grants join-level access, so the host enters only that.
+const JOIN_CODE = (process.env.JOIN_CODE || '').trim();
+const HOST_PASSWORD = (process.env.HOST_PASSWORD || '').trim();
+const authRequired = !!JOIN_CODE || !!HOST_PASSWORD;
+// A submitted access code / host password is valid for join-level access.
+function codeGrantsJoin(code) {
+  if (!JOIN_CODE && !HOST_PASSWORD) return true;         // open game
+  if (JOIN_CODE && code === JOIN_CODE) return true;
+  if (HOST_PASSWORD && code === HOST_PASSWORD) return true; // host pw also lets you in
+  return false;
+}
+function grantsHost(hostPassword) {
+  return HOST_PASSWORD ? hostPassword === HOST_PASSWORD : true; // no pw set → host open (legacy)
+}
+// Express guard for mutating HTTP endpoints — the client sends the access code
+// as an X-Access-Code header (or ?code= for link-triggered GETs).
+function requireAccess(req, res, next) {
+  if (!authRequired) return next();
+  const code = (req.get('X-Access-Code') || req.query.code || '').trim();
+  if (codeGrantsJoin(code)) return next();
+  return res.status(401).json({ error: 'access code required' });
+}
 const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg', 'audio/webm': 'weba' };
 const MIME_BY_EXT = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', weba: 'audio/webm' };
 
@@ -180,7 +206,7 @@ app.get('/api/categories', async (req, res) => {
 
 // Add or remove a topic from the persistent random-selection pool.
 // body: { action: 'add' | 'remove', topic: '...' }
-app.post('/api/categories/pool', async (req, res) => {
+app.post('/api/categories/pool', requireAccess, async (req, res) => {
   const { action, topic } = req.body || {};
   const t = (topic || '').trim();
   if (!t) return res.status(400).json({ error: 'no topic' });
@@ -221,7 +247,7 @@ app.get('/api/pool/status', async (req, res) => {
 // smaller banks). One-time-ish admin action; can take a while. Returns a summary.
 let warming = false;
 let warmProgress = { active: false, done: 0, total: 0, force: false };
-app.post('/api/pool/warm', async (req, res) => {
+app.post('/api/pool/warm', requireAccess, async (req, res) => {
   if (warming) return res.status(409).json({ error: 'already pre-generating — please wait' });
   warming = true;
   const force = !!(req.body && req.body.force);
@@ -437,7 +463,7 @@ app.get('/api/boards', async (req, res) => {
 });
 
 // Upsert or delete a custom category. body: { category } | { action:'delete', id }
-app.post('/api/custom', async (req, res) => {
+app.post('/api/custom', requireAccess, async (req, res) => {
   const body = req.body || {};
   let list = await readCustom();
   if (body.action === 'delete') {
@@ -560,7 +586,7 @@ app.get('/api/custommedia/:catId/:qIndex', async (req, res) => {
 // silently drop it, and we AWAIT the repo persist to report the real result.
 // The data URL is sent as text/plain so the global 100 KB express.json()
 // middleware ignores it; this route parses up to 8 MB.
-app.post('/api/custommedia/:catId/:qIndex', express.text({ limit: '8mb' }), async (req, res) => {
+app.post('/api/custommedia/:catId/:qIndex', requireAccess, express.text({ limit: '8mb' }), async (req, res) => {
   const dataUrl = typeof req.body === 'string' ? req.body : '';
   const m = dataUrl.match(/^data:(image\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/);
   if (!m) return res.status(400).json({ ok: false, error: 'bad data url' });
@@ -918,27 +944,34 @@ function redactForPlayers(v) {
   return v;
 }
 
-function broadcastState() {
-  // The host runs the game and may see everything; contestants get a redacted
-  // view so answers can't be read out of the broadcast state.
+// Build the state view for one socket: the host sees everything; contestants
+// (and the display) get a redacted view, plus their own Final wager/answer.
+function stateForSocket(sid) {
   const full = JSON.parse(JSON.stringify({ ...gameState, lockUntil }));
-  if (gameState.hostId) io.to(gameState.hostId).emit('state', full);
-
-  const common = redactForPlayers(JSON.parse(JSON.stringify(full)));
+  if (sid === gameState.hostId) return full;
+  const v = redactForPlayers(full);
   const f = gameState.final;
-
-  io.of('/').sockets.forEach((sock, sid) => {
-    if (sid === gameState.hostId) return;     // already sent the full state
-    if (!f) { sock.emit('state', common); return; }
-    // Each player additionally sees only their OWN wager/answer, plus any the
-    // host has already revealed during the spotlight.
-    const v = JSON.parse(JSON.stringify(common));
+  if (f) {
     const w = {}, a = {};
     Object.keys(f.wagers).forEach(id => { if (id === sid || (f.reveal[id] && f.reveal[id].wager)) w[id] = f.wagers[id]; });
     Object.keys(f.answers).forEach(id => { if (id === sid || (f.reveal[id] && f.reveal[id].answer)) a[id] = f.answers[id]; });
     v.final.wagers = w;
     v.final.answers = a;
-    sock.emit('state', v);
+  }
+  return v;
+}
+
+// Send current state to one (authenticated) socket — used right after a socket
+// authenticates so it doesn't have to wait for the next broadcast.
+function sendStateToSocket(socket) {
+  if (authRequired && !socket.data.authed) return;
+  socket.emit('state', stateForSocket(socket.id));
+}
+
+function broadcastState() {
+  io.of('/').sockets.forEach((sock, sid) => {
+    if (authRequired && !sock.data.authed) return;   // unauthenticated sockets get nothing
+    sock.emit('state', stateForSocket(sid));
   });
 }
 
@@ -1351,9 +1384,25 @@ function buildCustomCategory(cat) {
 
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
-  // Send current state immediately so a just-arrived guest can decide the
-  // title-screen gate (waiting vs. brief splash) before they join.
+  socket.data.authed = !authRequired;     // open game → everyone is pre-authed
+  socket.data.hostOk = !HOST_PASSWORD;    // no host password → host role is open
+  // Tell the client what gate (if any) to show before anything else.
+  socket.emit('authConfig', { requireCode: !!JOIN_CODE || !!HOST_PASSWORD, requireHostPassword: !!HOST_PASSWORD });
+  // Only an already-authed (open-game) socket gets state up front; otherwise it
+  // arrives right after the client authenticates.
   broadcastState();
+
+  // Validate the access code / host password. Grants join-level access and,
+  // with the right host password, host access. Idempotent (safe to re-send on
+  // reconnect). On success the socket immediately receives current state.
+  socket.on('authenticate', ({ code, hostPassword } = {}) => {
+    const joinOk = codeGrantsJoin((code || '').trim()) || grantsHost((hostPassword || '').trim());
+    if (!joinOk) { socket.emit('authError', { message: 'Incorrect access code.' }); return; }
+    socket.data.authed = true;
+    socket.data.hostOk = grantsHost((hostPassword || '').trim());
+    socket.emit('authOk', { hostOk: socket.data.hostOk });
+    sendStateToSocket(socket);
+  });
 
   // Test-only hook (inert unless TEST_HOOKS=1) to inject a board without the API
   if (process.env.TEST_HOOKS === '1') {
@@ -1374,6 +1423,10 @@ io.on('connection', (socket) => {
   }
 
   socket.on('join', ({ name, isHost }) => {
+    // Gate: must have passed the access code, and the host role needs the host
+    // password. (Both are no-ops when the game is configured open.)
+    if (authRequired && !socket.data.authed) { socket.emit('authError', { message: 'Enter the access code to join.' }); return; }
+    if (isHost && !socket.data.hostOk) { socket.emit('authError', { scope: 'host', message: 'Host password required.' }); return; }
     // The host is a pure operator — track the socket as hostId, but never add it
     // to gameState.players (no score/photo, never shown in player lists).
     if (isHost) {

@@ -748,24 +748,94 @@ function joinAsHost() {
   socket.emit('join', { name, isHost: true });
 }
 
-// iOS Safari drops the WebSocket on background/lock/network blips; socket.io
-// reconnects with a NEW socket id. Re-announce ourselves so the server re-binds
-// our player entry (it reclaims by name, preserving score) — otherwise buzzes
-// from the new socket are silently dropped (no player for that id).
-socket.on('connect', () => {
-  if (myName) socket.emit('join', { name: myName, isHost });
-});
-// Server asks us to re-join (e.g. it received an action from an unknown socket).
-socket.on('rejoin', () => {
-  if (myName) socket.emit('join', { name: myName, isHost });
-});
-
 // Role is decided by the URL: /host → host console; /display → passive
 // big-screen view; anything else → player.
 const IS_HOST_URL = /\/host\/?$/i.test(window.location.pathname);
 const IS_DISPLAY_URL = /\/display\/?$/i.test(window.location.pathname);
 isHost = IS_HOST_URL;
 isDisplay = IS_DISPLAY_URL;
+
+// ── Access control ──────────────────────────────────────────
+// The game can require a shared join code (players + display) and a separate
+// host password. The device remembers its credential so it isn't re-typed.
+const CRED_KEY = IS_HOST_URL ? 'jeopardyHostPassword' : 'jeopardyJoinCode';
+let authCred = '';
+try { authCred = localStorage.getItem(CRED_KEY) || ''; } catch (e) {}
+let didAuth = false, didProceed = false;
+function authPayload() { return IS_HOST_URL ? { hostPassword: authCred } : { code: authCred }; }
+function authHeaders() { return authCred ? { 'X-Access-Code': authCred } : {}; }
+
+// The server announces whether a gate is needed (once per connection, incl.
+// reconnects). Open game → proceed; gated → try the stored credential, else ask.
+socket.on('authConfig', ({ requireCode } = {}) => {
+  if (!requireCode) { handleAuthed(); return; }        // open game
+  if (authCred) socket.emit('authenticate', authPayload());  // silent retry with stored cred
+  else showAuthGate();
+});
+socket.on('authOk', () => { hideAuthGate(); try { localStorage.setItem(CRED_KEY, authCred); } catch (e) {} handleAuthed(); });
+socket.on('authError', ({ message } = {}) => {
+  authCred = '';
+  try { localStorage.removeItem(CRED_KEY); } catch (e) {}
+  showAuthGate(message || 'Incorrect — try again.');
+});
+// Server asks us to re-announce (it saw an action from an unknown socket).
+socket.on('rejoin', () => { if (didAuth) reJoin(); });
+
+// Once this socket is authenticated (or the game is open): do first-time role
+// setup, and (re)announce our join so a reconnect reclaims our player entry.
+function handleAuthed() {
+  const first = !didProceed; didProceed = true; didAuth = true;
+  if (IS_HOST_URL) {
+    if (first) unlockAudioOnFirstGesture();
+    myName = 'Host';
+    socket.emit('join', { name: 'Host', isHost: true });
+  } else if (IS_DISPLAY_URL) {
+    if (first) ensureDisplaySoundGate();
+    // display never joins
+  } else if (myName) {
+    socket.emit('join', { name: myName, isHost: false });   // reconnect re-join
+  }
+}
+function reJoin() {
+  if (IS_HOST_URL) socket.emit('join', { name: 'Host', isHost: true });
+  else if (myName) socket.emit('join', { name: myName, isHost: false });
+}
+// On (re)connect, the server re-sends authConfig, which drives (re)auth; but if
+// we're already authed (e.g. a quick blip that kept our cred), re-announce too.
+socket.on('connect', () => { if (didAuth && authCred) socket.emit('authenticate', authPayload()); });
+
+// A full-screen gate asking for the join code (players/display) or host password.
+let authGateEl = null;
+function showAuthGate(errMsg) {
+  if (!authGateEl) {
+    authGateEl = document.createElement('div');
+    authGateEl.id = 'authGate';
+    const label = IS_HOST_URL ? 'Host password' : 'Access code';
+    authGateEl.innerHTML = `
+      <div class="authg-card">
+        <div class="authg-title">🔒 ${label}</div>
+        <input id="authGateInput" type="password" autocomplete="off" placeholder="${label}">
+        <div id="authGateErr" class="authg-err"></div>
+        <button class="btn btn-primary" id="authGateBtn">Enter</button>
+      </div>`;
+    document.body.appendChild(authGateEl);
+    const submit = () => {
+      const v = document.getElementById('authGateInput').value.trim();
+      if (!v) return;
+      authCred = v;
+      document.getElementById('authGateErr').textContent = '';
+      socket.emit('authenticate', authPayload());
+    };
+    document.getElementById('authGateBtn').onclick = submit;
+    document.getElementById('authGateInput').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  }
+  authGateEl.classList.remove('hidden');
+  const errEl = document.getElementById('authGateErr');
+  if (errEl) errEl.textContent = errMsg || '';
+  const input = document.getElementById('authGateInput');
+  if (input) { input.value = ''; setTimeout(() => input.focus(), 50); }
+}
+function hideAuthGate() { if (authGateEl) authGateEl.classList.add('hidden'); }
 // Audio can't autoplay without a gesture; on host/display (no "Enter" button)
 // unlock on the first tap/key so synced clue audio & fanfares can play.
 function unlockAudioOnFirstGesture() {
@@ -796,20 +866,13 @@ function ensureDisplaySoundGate() {
   document.addEventListener('keydown', unlock);
   document.body.appendChild(gate);
 }
+// Set up the landing UI for the role. The actual join / proceed happens in
+// handleAuthed() once the socket is authenticated (immediately for an open game).
 (function initRole() {
-  if (IS_DISPLAY_URL) {
-    // Display: watch-only. Never join (so no player entry / no buzzer / not on
-    // the scoreboard); just receive the redacted broadcast like a contestant.
+  if (IS_DISPLAY_URL || IS_HOST_URL) {
+    // Host & display skip the join form / title splash.
     const landing = document.getElementById('landing');
     if (landing) landing.classList.add('hidden');
-    ensureDisplaySoundGate();
-  } else if (IS_HOST_URL) {
-    // Host: skip the title + join button entirely — go straight to setup.
-    const landing = document.getElementById('landing');
-    if (landing) landing.classList.add('hidden');
-    myName = 'Host';
-    socket.emit('join', { name: 'Host', isHost: true });   // (re)emitted on connect too
-    unlockAudioOnFirstGesture();
   } else {
     const ph = document.getElementById('landingPlayer');
     const ho = document.getElementById('landingHost');
@@ -1160,7 +1223,7 @@ function refreshCriteriaIndicators() {
 async function poolAction(action, topic) {
   const res = await fetch('/api/categories/pool', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ action, topic }),
   });
   if (!res.ok) throw new Error();
@@ -1231,7 +1294,7 @@ async function warmPool(force) {
   try {
     const res = await fetch('/api/pool/warm', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ force: !!force }),
     });
     const d = await res.json();
@@ -2362,7 +2425,7 @@ function saveCustomCat() {
   const payload = { category: { id: editingCat.id, name, questions: qs.map(q => ({
     clue: q.clue.trim(), answer: q.answer.trim(), media: q.media ? { type: q.media.type, name: q.media.name } : null,
   })) } };
-  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     .then(r => r.json())
     .then(async (res) => {
       if (res.error) { alert('Save failed: ' + res.error); return; }
@@ -2373,7 +2436,7 @@ function saveCustomCat() {
         if (!qs[idx]._dataUrl) continue;
         try {
           const r = await fetch(`/api/custommedia/${saved.id}/${idx}`, {
-            method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: qs[idx]._dataUrl,
+            method: 'POST', headers: { 'Content-Type': 'text/plain', ...authHeaders() }, body: qs[idx]._dataUrl,
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok || !j.ok) failures.push(`Q${idx + 1}: ${j.tooBig ? 'too large' : 'upload failed'}`);
@@ -2394,7 +2457,7 @@ function saveCustomCat() {
 
 function deleteCustomCat(id, name) {
   if (!confirm(`Delete custom category "${name}"?`)) return;
-  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) })
+  fetch('/api/custom', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ action: 'delete', id }) })
     .then(r => r.json()).then(res => { customList = res.categories || []; renderCustomEditor(); }).catch(() => alert('Delete failed.'));
 }
 
