@@ -287,7 +287,12 @@ async function writeGistFile(filename, data) {
     headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ files: { [filename]: { content: JSON.stringify(data, null, 2) } } }),
   });
-  if (!r.ok) throw new Error('gist write failed: ' + r.status);
+  if (!r.ok) {
+    const hint = r.status === 401
+      ? ' — GIST_TOKEN must be a CLASSIC token (ghp_…) with the "gist" scope; fine-grained PATs can\'t access Gists. See /api/storage/diag.'
+      : '';
+    throw new Error('gist write failed: ' + r.status + hint);
+  }
 }
 async function readCustom() {
   if (useGist) { const d = await readGistFile(CUSTOM_FILENAME); if (Array.isArray(d)) return d; }
@@ -489,10 +494,47 @@ app.get('/api/media/diag', async (req, res) => {
 app.get('/api/storage/diag', async (req, res) => {
   let customCount = 0;
   try { customCount = (await readCustom()).length; } catch (e) {}
+
+  // Actively probe the Gist so a bad token surfaces as a real HTTP status rather
+  // than silently falling back to the (ephemeral) local file. Gists REQUIRE a
+  // CLASSIC token with the `gist` scope — fine-grained PATs (github_pat_…) can't
+  // access Gists and always 401, even though they work fine for the media repo.
+  let gistReadStatus = null, gistWriteStatus = null, gistTokenKind = null, gistTokenLen = 0, gistHint = null;
+  if (GIST_TOKEN) {
+    gistTokenLen = GIST_TOKEN.trim().length;
+    gistTokenKind = GIST_TOKEN.startsWith('github_pat_') ? 'fine-grained (github_pat_…)'
+      : GIST_TOKEN.startsWith('ghp_') ? 'classic (ghp_…)' : 'unknown';
+  }
+  if (useGist) {
+    try {
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json' },
+      });
+      gistReadStatus = r.status;
+      // A no-op PATCH proves write access without changing anything meaningful.
+      const w = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${GIST_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: undefined }),
+      });
+      gistWriteStatus = w.status;
+    } catch (e) { gistHint = 'network error: ' + e.message; }
+    if (gistReadStatus === 401 || gistWriteStatus === 401) {
+      gistHint = gistTokenKind.startsWith('fine-grained')
+        ? 'GIST_TOKEN is a fine-grained PAT — GitHub does NOT allow those to access Gists. Create a CLASSIC token (ghp_…) with the "gist" scope and set it as GIST_TOKEN on Render.'
+        : '401 = GIST_TOKEN is invalid/expired or missing the "gist" scope. Regenerate a CLASSIC token with the "gist" scope.';
+    } else if (gistReadStatus === 404) {
+      gistHint = '404 = the token is valid but cannot see GIST_ID (wrong id, or the gist belongs to another account).';
+    }
+  }
+
   res.json({
     useGist,
     hasGistToken: !!GIST_TOKEN,
     hasGistId: !!GIST_ID,
+    gistTokenKind, gistTokenLen,
+    gistReadStatus, gistWriteStatus,
+    gistHint,
     useMediaRepo,
     customCount,
     note: useGist ? 'persistent (Gist)' : 'EPHEMERAL local file — lost on every redeploy',
