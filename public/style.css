@@ -1264,3 +1264,6 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
 }
 #authGate input:focus { outline: none; border-color: #F5A623; }
 #authGate .authg-err { color: #ff6b6b; font-size: 0.85rem; min-height: 1em; }
+
+/* Replay button under an audio clue */
+.modal-media-replay { display: block; margin: 8px auto 0; }

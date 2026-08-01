@@ -209,11 +209,30 @@ function speakClue(text, atServerTime, onEnd) {
   if (delay > 30) setTimeout(go, delay); else go();
 }
 
-// Play an audio clue's uploaded clip (the <audio> in the question modal). Called
-// after the narrator finishes reading the clue text so the two don't overlap.
+// Imported clips are often recorded quietly, so route them through a WebAudio
+// gain to boost above 100%. Also rewind on end so Replay/controls start over.
+const CLUE_MEDIA_GAIN = 2.5;
+function setupClueMediaAudio(el) {
+  if (!el || el._clueSetup) return;
+  el._clueSetup = true;
+  el.addEventListener('ended', () => { try { el.currentTime = 0; } catch (e) {} });
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    const src = ctx.createMediaElementSource(el);   // once per element; routes output through WebAudio
+    const g = ctx.createGain();
+    g.gain.value = CLUE_MEDIA_GAIN;
+    src.connect(g); g.connect(ctx.destination);
+  } catch (e) { /* fall back to the element's own (unboosted) output */ }
+}
+
+// Play an audio clue's uploaded clip (the <audio> in the question modal), always
+// from the start. Called after the narrator finishes reading the clue text (so
+// the two don't overlap) and by the host's Replay button.
 function playClueMediaAudio() {
   const el = document.querySelector('#modalMedia .modal-media-aud');
   if (!el) return;
+  try { const ctx = getAudioCtx(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) {}
   try { el.currentTime = 0; } catch (e) {}
   el.play().catch(() => {});
 }
@@ -1012,16 +1031,11 @@ function tickModal() {
   if (showClue) clueEl.classList.remove('hidden');
   else clueEl.classList.add('hidden');
 
-  // Custom-category media reveals alongside the clue (image shows / audio plays).
+  // Custom-category media reveals alongside the clue (image shows; audio clip is
+  // played by scheduleClueAudio AFTER the narrator finishes reading the clue, so
+  // don't auto-play it here — that would talk over the read-out and double-play).
   const mediaEl = document.getElementById('modalMedia');
-  if (mediaEl) {
-    const showMedia = q.media && showClue;
-    mediaEl.classList.toggle('hidden', !showMedia);
-    if (showMedia && q.media.type === 'audio') {
-      const a = mediaEl.querySelector('audio');
-      if (a && !a.dataset.tried) { a.dataset.tried = '1'; a.play().catch(() => {}); }
-    }
-  }
+  if (mediaEl) mediaEl.classList.toggle('hidden', !(q.media && showClue));
 
   // "BUZZ NOW!" cue — hidden for a player who already answered wrong (they only
   // see the clue while the others get their chance)
@@ -1560,9 +1574,13 @@ function renderQuestionModal() {
     const mediaEl = document.getElementById('modalMedia');
     if (q.media) {
       const src = `/api/custommedia/${q.media.catId}/${q.media.qIndex}`;
-      mediaEl.innerHTML = q.media.type === 'image'
-        ? `<img class="modal-media-img" src="${src}" alt="clue image">`
-        : `<audio class="modal-media-aud" controls src="${src}"></audio>`;
+      if (q.media.type === 'image') {
+        mediaEl.innerHTML = `<img class="modal-media-img" src="${src}" alt="clue image">`;
+      } else {
+        mediaEl.innerHTML = `<audio class="modal-media-aud" controls src="${src}"></audio>`
+          + `<button class="btn btn-sm btn-secondary modal-media-replay" onclick="playClueMediaAudio()">🔁 Replay clip</button>`;
+        setupClueMediaAudio(mediaEl.querySelector('.modal-media-aud'));
+      }
     } else {
       mediaEl.innerHTML = '';
     }
