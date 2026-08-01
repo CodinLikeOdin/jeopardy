@@ -1680,7 +1680,11 @@ function renderQuestionModal() {
     judgeValue = state.dailyDoubleWager;
   }
 
-  if (isHost && judgeId && !revealed) {
+  if (isHost && revealed) {
+    // Answer is up — host controls when to move on (no auto-advance timer).
+    hqc.classList.remove('hidden');
+    awardContainer.innerHTML = `<button class="btn btn-primary" onclick="nextClue()">Next clue →</button>`;
+  } else if (isHost && judgeId && !revealed) {
     hqc.classList.remove('hidden');
     const player = state.players[judgeId];
     awardContainer.innerHTML = `
@@ -2482,6 +2486,9 @@ function deleteCustomCat(id, name) {
 function selectSquare(round, category, valueIndex) {
   socket.emit('selectSquare', { round, category, valueIndex });
 }
+
+// Host dismisses a revealed clue and moves to the next one.
+function nextClue() { socket.emit('nextClue'); }
 
 function awardPoints(playerId, correct) {
   socket.emit('awardPoints', { playerId, correct });

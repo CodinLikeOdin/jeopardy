@@ -838,22 +838,26 @@ async function readCurrentClue(q) {
   return gameState.audioStartTime + durationMs;
 }
 
-// Show the answer to EVERYONE for 5 seconds, then clear the board.
+// Reveal the answer to EVERYONE, then hold on it until the host taps "Next clue"
+// (nextClue handler) — no auto-advance timer, so the host controls the pace.
 function revealAnswerThenClear() {
   clearQuestionTimeout();
   if (!gameState.currentQuestion) return;
   gameState.buzzOpen = false;
   gameState.currentQuestion.revealed = true;
   broadcastState();
-  revealTimeoutHandle = setTimeout(() => {
-    revealTimeoutHandle = null;
-    gameState.currentQuestion = null;
-    gameState.audioStartTime = null;
-    gameState.buzzArmTime = null;
-    currentAudio = null;
-    broadcastState();
-    maybeAutoAdvance();     // last square of the round done → advance automatically
-  }, 2500);
+}
+
+// Clear the revealed clue and move on (host-driven). Advances the round if that
+// was the last square.
+function clearRevealedClue() {
+  clearQuestionTimeout();
+  gameState.currentQuestion = null;
+  gameState.audioStartTime = null;
+  gameState.buzzArmTime = null;
+  currentAudio = null;
+  broadcastState();
+  maybeAutoAdvance();     // last square of the round done → advance automatically
 }
 
 // A round is complete when every square has been used.
@@ -1990,6 +1994,17 @@ io.on('connection', (socket) => {
     const isDailyDouble =
       gameState.dailyDoubles.some(dd => dd.round === round && dd.cat === category && dd.valueIndex === valueIndex);
 
+    // A Daily Double is wagered/judged against the controlling contestant. If
+    // nobody valid holds the board when a DD is picked (e.g. the very first
+    // clue), seed it to a present contestant so the host always gets the
+    // Correct/Wrong buttons — otherwise the DD is unjudgeable.
+    if (isDailyDouble && !gameState.players[gameState.boardControl]) {
+      const contestants = Object.keys(gameState.players);
+      gameState.boardControl = contestants.length
+        ? contestants[Math.floor(Math.random() * contestants.length)]
+        : null;
+    }
+
     clearQuestionTimeout();
     lockUntil = {};
     pendingBuzzes = [];
@@ -2024,6 +2039,13 @@ io.on('connection', (socket) => {
     gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
     scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
     broadcastState();
+  });
+
+  // Host taps "Next clue" once the answer is revealed → clear it and move on.
+  socket.on('nextClue', () => {
+    if (socket.id !== gameState.hostId) return;
+    if (!gameState.currentQuestion || !gameState.currentQuestion.revealed) return;
+    clearRevealedClue();
   });
 
   // ts = the buzzing client's estimate of current SERVER time (synced clock)
