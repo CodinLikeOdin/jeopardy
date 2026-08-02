@@ -1796,7 +1796,7 @@ io.on('connection', (socket) => {
   // Save the fully-configured board (all categories, clues, DDs, Final) under a
   // name so it can be reloaded exactly later with no generation.
   socket.on('saveBoard', async ({ name } = {}) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     if (!gameState.board.single || !gameState.board.double) {
       return socket.emit('error', { message: 'Build a board first, then save it.' });
     }
@@ -1823,7 +1823,7 @@ io.on('connection', (socket) => {
   // Load a saved board straight into the review screen (no generation, no
   // tokens). The host can then tweak and Start Game.
   socket.on('loadBoard', async ({ name } = {}) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const nm = String(name || '').trim();
     try {
       const boards = await readBoards();
@@ -1856,7 +1856,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('deleteBoard', async ({ name } = {}) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     try {
       const boards = await readBoards();
       delete boards[String(name || '').trim()];
@@ -1885,7 +1885,7 @@ io.on('connection', (socket) => {
 
   // Host fallback to reveal the clue (e.g. if a contestant dropped before wagering).
   socket.on('startFinalClue', async () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     await revealFinalClue(gameState.final);
   });
 
@@ -1902,7 +1902,7 @@ io.on('connection', (socket) => {
 
   // Host moves from the (closed) answer stage into one-at-a-time reveal.
   socket.on('beginFinalReveal', () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f || f.stage !== 'answer') return;
     clearFinalTimeout();
@@ -1920,14 +1920,14 @@ io.on('connection', (socket) => {
 
   // Advance the spotlight to the next contestant in the reveal.
   socket.on('nextFinalContestant', () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f || f.stage !== 'reveal') return;
     if (f.spotlight < f.revealOrder.length - 1) { f.spotlight++; broadcastState(); }
   });
 
   socket.on('revealFinalAnswer', ({ playerId }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
     f.reveal[playerId].answer = true;
@@ -1935,7 +1935,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('revealFinalWager', ({ playerId }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
     f.reveal[playerId].wager = true;
@@ -1944,7 +1944,7 @@ io.on('connection', (socket) => {
 
   // Host rules on a revealed answer; the wager is applied to that player's score.
   socket.on('judgeFinal', ({ playerId, correct }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f || f.stage !== 'reveal' || !f.reveal[playerId]) return;
     if (f.reveal[playerId].judged) return;     // already scored — don't double-apply
@@ -1958,7 +1958,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('crownWinner', () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const f = gameState.final;
     if (!f) return;
     const ranked = Object.entries(gameState.players)
@@ -1999,7 +1999,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('selectSquare', async ({ round, category, valueIndex }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const key = `${category}|${valueIndex}`;
     if (gameState.usedSquares[round][key]) return;
 
@@ -2060,7 +2060,7 @@ io.on('connection', (socket) => {
 
   // Host taps "Next clue" once the answer is revealed → clear it and move on.
   socket.on('nextClue', () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     if (!gameState.currentQuestion || !gameState.currentQuestion.revealed) return;
     clearRevealedClue();
   });
@@ -2104,7 +2104,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('awardPoints', ({ playerId, correct }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const q = gameState.currentQuestion;
     if (!q) return;
     const value = q.isDailyDouble && gameState.dailyDoubleWager !== null
@@ -2146,7 +2146,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('dailyDoubleWager', async ({ wager }) => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     const q = gameState.currentQuestion;
     if (!q || !q.isDailyDouble) return;
     if (gameState.dailyDoubleWager !== null) return;  // wager already locked in
@@ -2167,7 +2167,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('advanceRound', () => {
-    if (socket.id !== gameState.hostId) return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     clearQuestionTimeout();
     if (gameState.phase === 'single') {
       gameState.phase = 'double';

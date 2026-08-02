@@ -2483,19 +2483,32 @@ function deleteCustomCat(id, name) {
     .then(r => r.json()).then(res => { customList = res.categories || []; renderCustomEditor(); }).catch(() => alert('Delete failed.'));
 }
 
+// If our connection drifted (reconnected with a new socket id while the game
+// sat idle), the server no longer recognizes us as host and would ignore the
+// action. Re-announce first — emitted before the action, so the server processes
+// the re-bind, then the action, in order. Makes host buttons work on one click.
+function ensureHostBound() {
+  if (IS_HOST_URL && state && state.hostId && socket.id && state.hostId !== socket.id) {
+    socket.emit('join', { name: 'Host', isHost: true });
+  }
+}
+
 function selectSquare(round, category, valueIndex) {
+  ensureHostBound();
   socket.emit('selectSquare', { round, category, valueIndex });
 }
 
 // Host dismisses a revealed clue and moves to the next one.
-function nextClue() { socket.emit('nextClue'); }
+function nextClue() { ensureHostBound(); socket.emit('nextClue'); }
 
 function awardPoints(playerId, correct) {
+  ensureHostBound();
   socket.emit('awardPoints', { playerId, correct });
 }
 
 function advanceRound() {
   if (!confirm('Advance to the next round?')) return;
+  ensureHostBound();
   socket.emit('advanceRound');
 }
 
@@ -2534,6 +2547,7 @@ function submitWager(max) {
   let wager = parseInt(input.value, 10);
   if (isNaN(wager) || wager < 5) wager = 5;
   if (wager > max) wager = max;
+  ensureHostBound();
   socket.emit('dailyDoubleWager', { wager });
 }
 
