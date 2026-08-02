@@ -686,6 +686,23 @@ app.get('/api/tts/diag', (req, res) => {
   });
 });
 
+// List the account's ElevenLabs voices (name + id) so we can find a custom
+// voice's id to set as ELEVENLABS_VOICE_ID. Free metadata call (no TTS credits).
+app.get('/api/tts/voices', async (req, res) => {
+  if (!process.env.ELEVENLABS_API_KEY) return res.status(400).json({ error: 'ELEVENLABS_API_KEY not set' });
+  try {
+    const r = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY.trim() },
+    });
+    if (!r.ok) return res.status(r.status).json({ error: `voices HTTP ${r.status}: ${(await r.text()).slice(0, 200)}` });
+    const data = await r.json();
+    const voices = (data.voices || []).map(v => ({ name: v.name, voice_id: v.voice_id, category: v.category }));
+    res.json({ current: process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG (default)', voices });
+  } catch (e) {
+    res.status(502).json({ error: 'fetch failed: ' + e.message });
+  }
+});
+
 // Contestant photos (small JPEG thumbnails) kept in memory, served by player id.
 // Stored separately from game state so frequent state broadcasts stay tiny.
 let photos = {}; // playerId -> Buffer
