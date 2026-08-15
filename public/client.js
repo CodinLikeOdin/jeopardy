@@ -1440,6 +1440,11 @@ function render() {
   const hr = document.getElementById('hostHardReset');
   if (hr) hr.classList.toggle('hidden', !isHost);
 
+  // TV Mode toggle: available to the host in any phase (and to any device that
+  // already has it on, so a cast phone can turn it back off).
+  const tv = document.getElementById('tvToggle');
+  if (tv) tv.classList.toggle('hidden', !(isHost || document.body.classList.contains('tv-mode')));
+
   // Keep the "Clear Players" button labeled with the current roster size.
   const cpb = document.getElementById('clearPlayersBtn');
   if (cpb) { const n = Object.keys(state.players || {}).length; cpb.textContent = `👥 Clear Players (${n})`; }
@@ -2568,6 +2573,23 @@ function resetGame() {
   if (!confirm('Reset the game?')) return;
   socket.emit('resetGame');
 }
+
+// ── TV / cast mode ───────────────────────────────────────────
+// Big-screen layout (large clue images + text) for when a device is screen-cast
+// to a TV. Persisted in localStorage, and openable directly via ?tv=1.
+function applyTvMode(on) {
+  document.body.classList.toggle('tv-mode', !!on);
+  try { localStorage.setItem('tvMode', on ? '1' : '0'); } catch (e) {}
+  const btn = document.getElementById('tvToggle');
+  if (btn) btn.textContent = on ? '📺 TV Mode: On' : '📺 TV Mode';
+}
+function toggleTvMode() { applyTvMode(!document.body.classList.contains('tv-mode')); }
+(function initTvMode() {
+  let saved = false;
+  try { saved = localStorage.getItem('tvMode') === '1'; } catch (e) {}
+  const fromUrl = /[?&]tv=1\b/.test(location.search);
+  applyTvMode(saved || fromUrl);
+})();
 
 // Always-available host reset: clears the current game and returns to setup.
 function startOver() {
