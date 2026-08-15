@@ -209,9 +209,32 @@ function speakClue(text, atServerTime, onEnd) {
   if (delay > 30) setTimeout(go, delay); else go();
 }
 
-// Imported clips are often recorded quietly, so route them through a WebAudio
-// gain to boost above 100%. Also rewind on end so Replay/controls start over.
-const CLUE_MEDIA_GAIN = 2.5;
+// Uploaded clips vary wildly in loudness, so instead of a single fixed boost we
+// route each through a WebAudio gain and NORMALIZE it: measure the clip's RMS
+// loudness and set a gain that brings it to a consistent target, so every clip
+// (and roughly the narrator) plays at the same perceived volume.
+const CLUE_MEDIA_GAIN = 2.5;    // fallback boost if analysis fails
+const CLUE_TARGET_RMS = 0.11;   // reference loudness (tune to match the narrator)
+const CLUE_GAIN_MIN = 0.4, CLUE_GAIN_MAX = 8;
+
+// Fetch + decode a clip and return the gain that normalizes it to CLUE_TARGET_RMS.
+async function computeNormalizedGain(url, ctx) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const buf = await ctx.decodeAudioData(await resp.arrayBuffer());
+    let sumSq = 0, n = 0;
+    const stride = Math.max(1, Math.floor(buf.sampleRate / 8000));   // ~8kHz sampling is plenty for loudness
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < d.length; i += stride) { const s = d[i]; sumSq += s * s; n++; }
+    }
+    const rms = n ? Math.sqrt(sumSq / n) : 0;
+    if (!rms) return null;
+    return Math.max(CLUE_GAIN_MIN, Math.min(CLUE_GAIN_MAX, CLUE_TARGET_RMS / rms));
+  } catch (e) { return null; }
+}
+
 function setupClueMediaAudio(el) {
   if (!el || el._clueSetup) return;
   el._clueSetup = true;
@@ -221,8 +244,11 @@ function setupClueMediaAudio(el) {
     if (ctx.state === 'suspended') ctx.resume();
     const src = ctx.createMediaElementSource(el);   // once per element; routes output through WebAudio
     const g = ctx.createGain();
-    g.gain.value = CLUE_MEDIA_GAIN;
+    g.gain.value = CLUE_MEDIA_GAIN;                  // sensible default until analysis lands
     src.connect(g); g.connect(ctx.destination);
+    // Normalize to a consistent loudness (async; falls back to the default gain).
+    const url = el.currentSrc || el.src;
+    if (url) computeNormalizedGain(url, ctx).then(gain => { if (gain != null) { try { g.gain.value = gain; } catch (e) {} } });
   } catch (e) { /* fall back to the element's own (unboosted) output */ }
 }
 
