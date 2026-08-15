@@ -178,8 +178,21 @@ function setAudioStatus(text, tappable) {
   el.classList.toggle('tappable', !!tappable);
 }
 
-// Tap-to-play fallback if the browser blocked autoplay.
+// Tap-to-play fallback if the browser blocked autoplay. Unlocks the audio
+// context and replays the decoded buffer (WebAudio) when we have it, else the
+// <audio> element.
 function retryClueAudio() {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+  if (lastClueBuffer && ctx.state === 'running') {
+    stopClueSource();
+    const src = ctx.createBufferSource();
+    src.buffer = lastClueBuffer; src.connect(ctx.destination);
+    try { src.start(); } catch (e) {}
+    clueSource = src;
+    setAudioStatus('🔊 audio playing');
+    return;
+  }
   const el = getClueAudioEl();
   el.muted = false;
   el.play().then(() => setAudioStatus('🔊 audio playing')).catch(() => {});
@@ -271,6 +284,74 @@ function pickAnnouncerVoice() {
 }
 function cancelSpeech() { try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch (e) {} }
 
+// ── Sample-accurate clue narration (Web Audio) ───────────────
+// The clock sync makes every device agree on `audioStartTime`; to actually
+// START the voice at that instant in unison, we decode the mp3 and schedule a
+// WebAudio BufferSource (sample-accurate, like the buzzer) instead of the
+// <audio> element (whose .play() has device-dependent start latency). If the
+// AudioContext is locked or decoding fails, we fall back to the element path.
+let clueSource = null;      // active WebAudio narration source
+let clueEndTimer = null;    // fires the after-narration callback (e.g. play the DD clip)
+let lastClueBuffer = null;  // decoded buffer, kept for tap-to-replay
+
+function stopClueSource() {
+  if (clueSource) { try { clueSource.onended = null; clueSource.stop(); } catch (e) {} clueSource = null; }
+  if (clueEndTimer) { clearTimeout(clueEndTimer); clueEndTimer = null; }
+}
+
+function scheduleClueBuffer(buf, atServerTime, onEnded) {
+  const ctx = getAudioCtx();
+  stopClueSource();
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  const when = ctx.currentTime + Math.max(0, (atServerTime - serverNow()) / 1000);
+  try { src.start(when); } catch (e) { try { src.start(); } catch (e2) {} }
+  clueSource = src;
+  if (onEnded) {
+    const ms = Math.max(0, (when - ctx.currentTime) * 1000 + buf.duration * 1000);
+    clueEndTimer = setTimeout(() => { clueEndTimer = null; onEnded(); }, ms);
+  }
+}
+
+// Try to play the fetched mp3 via WebAudio at the synced instant. Returns true
+// on success, false if the caller should use the <audio> element fallback.
+async function playClueMp3WebAudio(arrBuf, atServerTime, onEnded) {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
+  if (ctx.state !== 'running') return false;      // locked device → element path (handles the tap gate)
+  let buf;
+  try { buf = await ctx.decodeAudioData(arrBuf.slice(0)); } catch (e) { return false; }
+  lastClueBuffer = buf;
+  scheduleClueBuffer(buf, atServerTime, onEnded);
+  return true;
+}
+
+// <audio>-element fallback (imprecise start, but robust + drives the tap gate).
+function playClueMp3Element(arrBuf, atServerTime, isAudioClue, onEnded) {
+  const blob = new Blob([arrBuf], { type: 'audio/mpeg' });
+  if (clueAudioUrl) URL.revokeObjectURL(clueAudioUrl);
+  clueAudioUrl = URL.createObjectURL(blob);
+  const el = getClueAudioEl();
+  el.muted = false;
+  el.src = clueAudioUrl;
+  el.load();
+  el.onended = (isAudioClue && onEnded) ? () => { el.onended = null; onEnded(); } : null;
+  let started = false;
+  const go = () => {
+    if (started) return;
+    started = true;
+    el.play()
+      .then(() => setAudioStatus(''))
+      .catch(() => {
+        if (isDisplay) { setAudioStatus(''); ensureDisplaySoundGate(); }
+        else setAudioStatus('🔊 Tap here to hear the clue', true);
+      });
+  };
+  const delayMs = atServerTime - serverNow();
+  if (delayMs > 30) setTimeout(go, delayMs); else go();
+}
+
 async function scheduleClueAudio() {
   if (!state || !state.currentQuestion || state.audioStartTime == null) return;
   const q = state.currentQuestion;
@@ -309,31 +390,12 @@ async function scheduleClueAudio() {
   try {
     const res = await fetch('/api/tts/current');
     if (!res.ok) { fallback(); return; }      // no audio (quota / cold start) → browser voice
-    const blob = await res.blob();
-    if (!blob || blob.size === 0) { fallback(); return; }
-    if (clueAudioUrl) { URL.revokeObjectURL(clueAudioUrl); }
-    clueAudioUrl = URL.createObjectURL(blob);
-    const el = getClueAudioEl();
-    el.muted = false;
-    el.src = clueAudioUrl;
-    el.load();
-    // Play the clip when the narration MP3 finishes (cleared for non-audio clues).
-    el.onended = isAudioClue ? () => { el.onended = null; afterNarration(); } : null;
-    let started = false;
-    const go = () => {
-      if (started) return;
-      started = true;
-      el.play()
-        .then(() => setAudioStatus(''))                       // playing — hide indicator
-        .catch(() => {
-          // On the display, never nag per-clue — surface the one-time sound gate
-          // instead (a single tap unlocks audio for the rest of the session).
-          if (isDisplay) { setAudioStatus(''); ensureDisplaySoundGate(); }
-          else setAudioStatus('🔊 Tap here to hear the clue', true);
-        });
-    };
-    const delayMs = state.audioStartTime - serverNow();
-    if (delayMs > 30) setTimeout(go, delayMs); else go();
+    const arrBuf = await res.arrayBuffer();
+    if (!arrBuf || arrBuf.byteLength === 0) { fallback(); return; }
+    // Precise WebAudio scheduling; element fallback if the context is locked.
+    const ok = await playClueMp3WebAudio(arrBuf, state.audioStartTime, afterNarration);
+    if (ok) setAudioStatus('');
+    else playClueMp3Element(arrBuf, state.audioStartTime, isAudioClue, afterNarration);
   } catch (e) {
     fallback();
   }
@@ -702,18 +764,10 @@ async function playClueAudioAt(startTime, fallbackText) {
   try {
     const res = await fetch('/api/tts/current');
     if (!res.ok) { speakClue(fallbackText, startTime); return; }
-    const blob = await res.blob();
-    if (!blob || blob.size === 0) { speakClue(fallbackText, startTime); return; }
-    if (clueAudioUrl) URL.revokeObjectURL(clueAudioUrl);
-    clueAudioUrl = URL.createObjectURL(blob);
-    const el = getClueAudioEl();
-    el.muted = false;
-    el.onended = null;                 // Final has no media clip — drop any prior clue's handler
-    el.src = clueAudioUrl; el.load();
-    let started = false;
-    const go = () => { if (started) return; started = true; el.play().catch(() => {}); };
-    const delay = startTime - serverNow();
-    if (delay > 30) setTimeout(go, delay); else go();
+    const arrBuf = await res.arrayBuffer();
+    if (!arrBuf || arrBuf.byteLength === 0) { speakClue(fallbackText, startTime); return; }
+    const ok = await playClueMp3WebAudio(arrBuf, startTime, null);   // Final has no media clip
+    if (!ok) playClueMp3Element(arrBuf, startTime, false, null);
   } catch (e) { speakClue(fallbackText, startTime); }
 }
 
@@ -1679,6 +1733,7 @@ function renderQuestionModal() {
     modal.classList.add('hidden');
     ensureModalTicker(false);
     cancelSpeech();              // stop browser-voice read-out when the clue clears
+    stopClueSource();            // stop any WebAudio narration still scheduled/playing
     endDdReveal(); ddRevKey = null;   // drop any lingering DD reveal overlay
     return;
   }
