@@ -1335,6 +1335,30 @@ function saveCurrentBoard() {
   socket.emit('saveBoard', { name });
 }
 
+// Pre-generate & cache the narrator audio for every clue on the board.
+function pregenerateVoices() {
+  ensureHostBound();
+  const btn = document.getElementById('rvVoiceBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+  socket.emit('pregenerateVoices');
+}
+socket.on('voiceProgress', ({ done, total, complete, failed, persisted, error }) => {
+  const el = document.getElementById('rvVoiceStatus');
+  const btn = document.getElementById('rvVoiceBtn');
+  const reset = () => { if (btn) { btn.disabled = false; btn.textContent = '🎙️ Pre-generate Voices'; } };
+  if (!el) return;
+  el.classList.remove('hidden');
+  if (error) { el.textContent = '⚠️ ' + error; reset(); return; }
+  if (complete) {
+    el.textContent = `✅ Voices ready — ${total} clues cached${failed ? `, ${failed} failed (ElevenLabs quota?)` : ''}. `
+      + (persisted ? 'Saved — future games of these clues cost no credits.' : '(Not persisted: media repo not configured.)');
+    reset();
+  } else {
+    el.textContent = `🎙️ Generating narrator audio — ${done} / ${total}…`;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+  }
+});
+
 function openBoardPicker() {
   document.getElementById('boardPicker').classList.remove('hidden');
   renderBoardPicker();
@@ -1755,8 +1779,10 @@ function renderReview() {
         <div class="rv-buttons">
           <button id="rvRegen" class="btn btn-secondary" onclick="regenerateFinal()">⟳ Regenerate Final</button>
           <button class="btn btn-secondary" onclick="saveCurrentBoard()" title="Save this whole board (all categories, clues, daily doubles, Final) to reload later">💾 Save Board</button>
+          <button id="rvVoiceBtn" class="btn btn-secondary" onclick="pregenerateVoices()" title="Generate & save the narrator audio for every clue now, so the game plays instantly and never re-bills ElevenLabs for these clues">🎙️ Pre-generate Voices</button>
           <button id="rvStart" class="btn btn-primary" onclick="beginRounds()">Start Game →</button>
         </div>
+        <div id="rvVoiceStatus" class="rv-status hidden"></div>
       </div>`;
     reviewBuilt = true;
     reviewLastContent = '';

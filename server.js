@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const Anthropic = require('@anthropic-ai/sdk');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -647,9 +648,11 @@ async function ttsAttempt(text, voiceId) {
 // Generate clue audio via ElevenLabs (128kbps CBR mp3). Returns a Buffer or null.
 // Retries once on a transient failure (e.g. a Render cold start timing out the
 // first call); on permanent failure we just proceed with on-screen text + cue.
+function ttsVoiceId() { return process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; } // Arnold (announcer)
+
 async function generateTTS(text) {
   if (!process.env.ELEVENLABS_API_KEY) { lastTtsError = 'ELEVENLABS_API_KEY not set on server'; return null; }
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || 'VR6AewLTigWG4xSOukaG'; // Arnold (announcer)
+  const voiceId = ttsVoiceId();
   for (let attempt = 0; attempt < 2; attempt++) {
     const r = await ttsAttempt(text, voiceId);
     if (r.buffer) return r.buffer;
@@ -658,15 +661,45 @@ async function generateTTS(text) {
   return null;
 }
 
+// ── Persistent clue-audio cache (voice+text keyed) ───────────────────────────
+// TTS for a given clue text + voice never changes, so we hash (voice|text) and
+// cache the mp3 in memory (survives game resets) AND — when a media repo is
+// configured — in the repo at tts/<voice>/<hash>.mp3. So the SAME clue is never
+// re-billed to ElevenLabs across games or redeploys.
+const ttsMemCache = new Map();   // hash -> Buffer
+function ttsKey(text) { return crypto.createHash('sha1').update(ttsVoiceId() + '\n' + text).digest('hex'); }
+
+async function ghGetRaw(pathInRepo) {
+  if (!useMediaRepo) return null;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${MEDIA_REPO}/contents/${pathInRepo}`, {
+      headers: { Authorization: `Bearer ${MEDIA_TOKEN}`, Accept: 'application/vnd.github.raw' },
+    });
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch (e) { return null; }
+}
+
+// Clue audio with caching: memory → persisted repo → generate (+persist).
+// Independent of the game's voiceMode (callers gate playback on useElevenLabs()).
+async function getClueAudio(text) {
+  if (!text || !process.env.ELEVENLABS_API_KEY) return null;
+  const key = ttsKey(text);
+  if (ttsMemCache.has(key)) return ttsMemCache.get(key);
+  const repoPath = `tts/${ttsVoiceId()}/${key}.mp3`;
+  const cached = await ghGetRaw(repoPath);
+  if (cached && cached.length) { ttsMemCache.set(key, cached); return cached; }
+  const buffer = await generateTTS(text);
+  if (buffer) {
+    ttsMemCache.set(key, buffer);
+    if (useMediaRepo) ghPutFile(repoPath, buffer, `tts ${key}`).catch(e => console.error('tts persist failed:', e.message));
+  }
+  return buffer;
+}
+
 // The current question's audio, cached so every device fetches the same bytes
 // with a single ElevenLabs call. Keyed by an id that changes per question.
 let currentAudio = null; // { id, buffer }
-
-// Pre-generated clue audio, keyed by the clue/final object itself. Editing or
-// regenerating a clue replaces its object (see setCategories/regenerateClue),
-// so a stale cache entry simply can't be found — no manual invalidation
-// needed. Entries are garbage-collected once a game's board is discarded.
-const clueAudioCache = new WeakMap(); // clueObj -> Buffer
 
 app.get('/api/tts/current', (req, res) => {
   if (!currentAudio) return res.status(404).end();
@@ -845,7 +878,7 @@ function reopenBuzzers(windowMs) {
 // server-clock time the clue finishes (clueEnd), or null if the question
 // changed while awaiting TTS. Sets audioStartTime so clients reveal/play it.
 async function readCurrentClue(q) {
-  const buffer = useElevenLabs() ? (clueAudioCache.get(q) || await generateTTS(q.clue)) : null;
+  const buffer = useElevenLabs() ? await getClueAudio(q.clue) : null;
   if (gameState.currentQuestion !== q) return null;   // replaced/cleared while awaiting
   currentAudio = buffer ? { id: 'a' + Date.now(), buffer } : null;
   const durationMs = buffer
@@ -1039,10 +1072,7 @@ function startFinalRound() {
   // Generate the Final clue's audio now, while players are wagering, so
   // revealFinalClue doesn't make them wait on ElevenLabs afterward.
   if (useElevenLabs()) {
-    const f = gameState.final;
-    generateTTS(f.clue)
-      .then(buffer => { if (buffer && gameState.final === f) clueAudioCache.set(f, buffer); })
-      .catch(e => console.error('final clue audio pregen failed:', e.message));
+    getClueAudio(gameState.final.clue).catch(e => console.error('final clue audio pregen failed:', e.message));
   }
 }
 
@@ -1054,7 +1084,7 @@ async function revealFinalClue(f) {
   f.stage = 'answer';
   broadcastState();
 
-  const buffer = useElevenLabs() ? (clueAudioCache.get(f) || await generateTTS(f.clue)) : null;
+  const buffer = useElevenLabs() ? await getClueAudio(f.clue) : null;
   if (!gameState.final || gameState.final !== f) return;   // round changed while awaiting TTS
   currentAudio = buffer ? { id: 'f' + Date.now(), buffer } : null;
   const durationMs = buffer
@@ -1115,19 +1145,15 @@ async function runWithConcurrency(items, limit, fn) {
   await Promise.all(workers);
 }
 
-// Background-fill clueAudioCache for every clue on a round's board so nobody
-// waits on ElevenLabs mid-question. Fire-and-forget; readCurrentClue falls
-// back to a live call on a cache miss, so failures here are harmless.
+// Warm the clue-audio cache for every clue on a round's board so nobody waits
+// on ElevenLabs mid-question. Fire-and-forget; readCurrentClue falls back to a
+// live call on a cache miss, so failures here are harmless.
 async function preGenerateRoundAudio(round) {
   if (!useElevenLabs()) return;
   const board = gameState.board[round];
   if (!board) return;
   const clues = Object.values(board).flat();
-  await runWithConcurrency(clues, 4, async (q) => {
-    if (clueAudioCache.has(q)) return;
-    const buffer = await generateTTS(q.clue);
-    if (buffer && gameState.board[round] === board) clueAudioCache.set(q, buffer);
-  });
+  await runWithConcurrency(clues, 4, async (q) => { if (q && q.clue) await getClueAudio(q.clue); });
 }
 
 // Normalize text for comparison: lowercase, drop ALL punctuation, collapse
@@ -1791,6 +1817,30 @@ io.on('connection', (socket) => {
     preGenerateRoundAudio('single')
       .then(() => preGenerateRoundAudio('double'))
       .catch(e => console.error('clue audio pregen failed:', e.message));
+  });
+
+  // Host (review screen): pre-generate + persist the spoken audio for every clue
+  // on the board and the Final clue, so the game plays instantly and the same
+  // clues are never re-billed to ElevenLabs. Progress is streamed back.
+  socket.on('pregenerateVoices', async () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    if (!process.env.ELEVENLABS_API_KEY) { socket.emit('voiceProgress', { error: 'ElevenLabs key is not set on the server.' }); return; }
+    const texts = [];
+    for (const round of ['single', 'double']) {
+      const board = gameState.board[round];
+      if (board) Object.values(board).forEach(clues => (clues || []).forEach(c => { if (c && c.clue) texts.push(c.clue); }));
+    }
+    if (gameState.finalJeopardy && gameState.finalJeopardy.clue) texts.push(gameState.finalJeopardy.clue);
+    const uniq = [...new Set(texts)];
+    if (!uniq.length) { socket.emit('voiceProgress', { error: 'No board to pre-generate yet.' }); return; }
+    let done = 0, failed = 0;
+    socket.emit('voiceProgress', { done: 0, total: uniq.length });
+    await runWithConcurrency(uniq, 3, async (t) => {
+      try { if (!(await getClueAudio(t))) failed++; } catch (e) { failed++; }
+      done++;
+      socket.emit('voiceProgress', { done, total: uniq.length });
+    });
+    socket.emit('voiceProgress', { done: uniq.length, total: uniq.length, complete: true, failed, persisted: useMediaRepo });
   });
 
   // Save the fully-configured board (all categories, clues, DDs, Final) under a
