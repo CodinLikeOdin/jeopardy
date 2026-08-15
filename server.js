@@ -2202,9 +2202,11 @@ io.on('connection', (socket) => {
     if (!q || !q.isDailyDouble) return;
     if (gameState.dailyDoubleWager !== null) return;  // wager already locked in
     // The controlling contestant may wager up to their current score, or up to
-    // the clue's dollar value if that's higher (even when their score is < $0).
+    // the round's floor (single $500 / double $1000) if that's higher — so a
+    // player at $0 or negative can still wager the full floor.
     const ctrl = gameState.boardControl ? gameState.players[gameState.boardControl] : null;
-    const maxWager = Math.max(ctrl ? ctrl.score : 0, q.dollarValue);
+    const roundFloor = q.round === 'single' ? 500 : 1000;
+    const maxWager = Math.max(ctrl ? ctrl.score : 0, roundFloor);
     let w = Math.round(Number(wager));
     if (!Number.isFinite(w)) w = q.dollarValue;
     gameState.dailyDoubleWager = Math.max(5, Math.min(maxWager, w));

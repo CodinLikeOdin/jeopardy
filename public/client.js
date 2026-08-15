@@ -1688,10 +1688,12 @@ function renderQuestionModal() {
     if (isHost && state.dailyDoubleWager === null) {
       const ctrl = state.boardControl ? state.players[state.boardControl] : null;
       const ctrlName = ctrl ? escHtml(ctrl.name) : 'the controlling player';
-      const maxWager = ctrl ? Math.max(ctrl.score, q.dollarValue) : q.dollarValue;
+      const roundFloor = q.round === 'single' ? 500 : 1000;
+      const maxWager = Math.max(ctrl ? ctrl.score : 0, roundFloor);
+      const defaultWager = Math.min(q.dollarValue, maxWager);
       wagerSection.innerHTML = scoresHtml + `
-        <span>${ctrlName}'s wager (max $${maxWager}):</span>
-        <input type="number" id="wagerInput" min="5" max="${maxWager}" value="${q.dollarValue}" style="padding:8px;border-radius:6px;border:none">
+        <span>${ctrlName}'s wager (max $${maxWager.toLocaleString()}):</span>
+        <input type="number" id="wagerInput" min="5" max="${maxWager}" value="${defaultWager}" style="padding:8px;border-radius:6px;border:none">
         <button class="btn btn-primary btn-sm" onclick="submitWager(${maxWager})">Set Wager</button>
       `;
     } else if (state.dailyDoubleWager !== null) {
