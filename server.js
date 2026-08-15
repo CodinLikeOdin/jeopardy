@@ -775,6 +775,7 @@ const LEAD_IN_MS = 2500;       // time for clients to fetch+decode audio before 
 const DEFAULT_BUZZ_MS = 8000;  // default first buzz window after the clue finishes
 const RETRY_TIMEOUT_MS = 3000; // buzz window after a wrong answer
 const REARM_MS = 1000;         // synced "get ready" before buzzers re-arm on retry
+const MEDIA_SAFETY_MS = 120000;// max wait for an audio/video clip to finish before the no-buzz timer starts anyway
 const SETTLE_MS = 250;         // collect near-simultaneous buzzes, then pick earliest
 const LOCKOUT_MS = 250;        // early/mash penalty
 const DD_TIMEOUT_MS = 20000;   // daily double answer window
@@ -840,15 +841,20 @@ function clearFinalTimeout() {
 
 // Schedule the "nobody buzzed" timeout to fire `windowMs` after buzzers arm.
 function scheduleNoBuzzTimeout(windowMs) {
+  scheduleNoBuzzTimeoutIn(Math.max(0, gameState.buzzArmTime - Date.now()) + windowMs);
+}
+
+// Reveal the answer `delayMs` from now if nobody has buzzed by then.
+function scheduleNoBuzzTimeoutIn(delayMs) {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
-  const fireIn = Math.max(0, gameState.buzzArmTime - Date.now()) + windowMs;
+  const q = gameState.currentQuestion;
   questionTimeoutHandle = setTimeout(() => {
     questionTimeoutHandle = null;
-    if (gameState.currentQuestion && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
+    if (gameState.currentQuestion === q && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
       io.emit('questionTimeout');         // clients play the "nobody got it" buzzers
       revealAnswerThenClear();
     }
-  }, fireIn);
+  }, delayMs);
 }
 
 // Daily double answer window: when time runs out, just play the buzzer. The
@@ -2132,7 +2138,33 @@ io.on('connection', (socket) => {
     // With the early-buzz penalty ON, buzzers arm when the clue FINISHES.
     // With it OFF, they arm when the clue starts appearing (buzz any time, no penalty).
     gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
-    scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
+
+    // Audio/video clue: the uploaded clip plays AFTER the narration reads the
+    // clue text. Let contestants buzz DURING the clip (earliest recorded), and
+    // don't start the no-buzz timer until the host's device reports the clip
+    // finished (clueMediaEnded) — otherwise the timer expires mid-clip and the
+    // answer is revealed before anyone hears it. A long safety net prevents a
+    // hang if that signal never arrives.
+    const isTimedMedia = !!(thisQ.media && (thisQ.media.type === 'audio' || thisQ.media.type === 'video'));
+    if (isTimedMedia) {
+      thisQ.awaitingMediaEnd = true;
+      scheduleNoBuzzTimeout(MEDIA_SAFETY_MS);
+    } else {
+      scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
+    }
+    broadcastState();
+  });
+
+  // Host's device reports the audio/video clip finished: now start the normal
+  // no-buzz timer (unless someone already buzzed in during the clip).
+  socket.on('clueMediaEnded', () => {
+    if (socket.id !== gameState.hostId) return;
+    const q = gameState.currentQuestion;
+    if (!q || !q.awaitingMediaEnd) return;
+    q.awaitingMediaEnd = false;
+    if (gameState.buzzOpen && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
+      scheduleNoBuzzTimeoutIn(gameState.settings.buzzTimeoutMs);   // full buzz window starts now that the clip finished
+    }
     broadcastState();
   });
 

@@ -251,7 +251,11 @@ async function computeNormalizedGain(url, ctx) {
 function setupClueMediaAudio(el) {
   if (!el || el._clueSetup) return;
   el._clueSetup = true;
-  el.addEventListener('ended', () => { try { el.currentTime = 0; } catch (e) {} });
+  el.addEventListener('ended', () => {
+    // The host's clip-end drives the server's buzz timer for audio clues.
+    if (isHost) socket.emit('clueMediaEnded');
+    try { el.currentTime = 0; } catch (e) {}
+  });
   try {
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
