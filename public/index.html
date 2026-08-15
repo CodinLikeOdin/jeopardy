@@ -133,6 +133,13 @@
         <button class="btn btn-primary" onclick="submitCategories()">Generate Questions</button>
       </div>
       <div id="warmPoolStatus" class="warm-status hidden"></div>
+      <div id="lobbyRoom" class="lobby-room">
+        <div class="lobby-room-row">
+          <label class="rv-label" for="lobbyVideoSelect">🎬 Lobby video (plays for contestants while they wait):</label>
+          <select id="lobbyVideoSelect" class="rv-input" onchange="onLobbyVideoChange()"></select>
+        </div>
+        <div id="setupPlayers" class="setup-players"></div>
+      </div>
     </div>
 
     <!-- Custom Category editor (host only) -->

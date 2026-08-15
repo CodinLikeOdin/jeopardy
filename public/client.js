@@ -1463,6 +1463,7 @@ function render() {
         refreshCriteriaIndicators();
       });
     refreshWarmStatus();
+    loadLobbyVideos();
     // Warn the host if persistent storage isn't configured (custom categories /
     // pool edits would be lost on every redeploy).
     fetch('/api/storage/diag').then(r => r.json()).then(d => {
@@ -1484,6 +1485,8 @@ function render() {
     showScreen('setup');
     ensureCustomButtons();
     ensureSetupIndicators();
+    renderSetupPlayers();
+    syncLobbyVideoSelect();
   }
   if (state.phase === 'generating') {
     showScreen('generating');
@@ -1535,15 +1538,80 @@ function showScreen(phase) {
   if (el) el.classList.remove('hidden');
 }
 
+function playerChip(id, p) {
+  const rd = p.ready ? ' player-chip-ready' : '';
+  return `<div class="player-chip${rd}" style="background:${p.color}">${avatar(id, p, 28)}${escHtml(p.name)}${p.ready ? ' ✅' : ''}</div>`;
+}
+
 function renderLobby() {
-  const players = Object.entries(state.players || {});
+  const players = Object.entries(state.players || {}).filter(([id, p]) => !p.isHost);
+  const vid = state.lobbyVideo
+    ? `<div class="lobby-video-wrap">
+         <video id="lobbyVideo" class="lobby-video" src="/videos/${encodeURIComponent(state.lobbyVideo)}" autoplay muted loop playsinline></video>
+         <button class="btn btn-sm btn-secondary lobby-unmute" onclick="unmuteLobbyVideo()">🔊 Tap for sound</button>
+       </div>`
+    : '';
+  const meReady = myId && state.players[myId] && state.players[myId].ready;
+  const readyBtn = (!isHost && myId && state.players[myId])
+    ? `<button class="btn ${meReady ? 'btn-secondary' : 'btn-primary'}" onclick="toggleReady()">${meReady ? '✅ Ready (tap to cancel)' : "✋ I'm Ready"}</button>`
+    : '';
+  const readyCount = players.filter(([, p]) => p.ready).length;
   document.getElementById('lobbyContent').innerHTML = `
-    <h2>Waiting for Host to Start</h2>
-    <p style="color:#aaa;margin-bottom:8px">Players joined:</p>
+    <h2>${state.lobbyVideo ? 'Get Ready…' : 'Waiting for Host to Start'}</h2>
+    ${vid}
+    <div style="margin:10px 0">${readyBtn}</div>
+    <p style="color:#aaa;margin-bottom:8px">Players joined (${readyCount}/${players.length} ready):</p>
     <div class="player-list">
-      ${players.map(([id, p]) => `<div class="player-chip" style="background:${p.color}">${avatar(id, p, 28)}${escHtml(p.name)}</div>`).join('')}
+      ${players.map(([id, p]) => playerChip(id, p)).join('')}
     </div>
   `;
+}
+
+// Host's setup-screen view of who has joined and who's ready.
+function renderSetupPlayers() {
+  const el = document.getElementById('setupPlayers');
+  if (!el) return;
+  const players = Object.entries(state.players || {}).filter(([id, p]) => !p.isHost);
+  if (!players.length) { el.innerHTML = '<span class="setup-players-empty">No contestants have joined yet.</span>'; return; }
+  const readyCount = players.filter(([, p]) => p.ready).length;
+  el.innerHTML = `<div class="setup-players-head">Contestants — ${readyCount}/${players.length} ready</div>`
+    + `<div class="player-list">${players.map(([id, p]) => playerChip(id, p)).join('')}</div>`;
+}
+
+function toggleReady() {
+  const me = myId && state.players && state.players[myId];
+  socket.emit('setReady', { ready: !(me && me.ready) });
+}
+
+function unmuteLobbyVideo() {
+  const v = document.getElementById('lobbyVideo');
+  if (v) { v.muted = false; v.volume = 1; v.play().catch(() => {}); }
+}
+
+// ── Lobby video picker (host, setup) ─────────────────────────
+let lobbyVideosLoaded = false;
+function loadLobbyVideos() {
+  const sel = document.getElementById('lobbyVideoSelect');
+  if (!sel) return;
+  fetch('/api/videos').then(r => r.json()).then(d => {
+    const vids = (d && d.videos) || [];
+    sel.innerHTML = `<option value="">— none —</option>`
+      + vids.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('');
+    lobbyVideosLoaded = true;
+    syncLobbyVideoSelect();
+  }).catch(() => {});
+}
+function syncLobbyVideoSelect() {
+  const sel = document.getElementById('lobbyVideoSelect');
+  if (!sel || !lobbyVideosLoaded) return;
+  if (document.activeElement === sel) return;            // don't fight the host mid-selection
+  sel.value = (state && state.lobbyVideo) || '';
+}
+function onLobbyVideoChange() {
+  const sel = document.getElementById('lobbyVideoSelect');
+  if (!sel) return;
+  ensureHostBound();
+  socket.emit('setLobbyVideo', { name: sel.value || null });
 }
 
 function renderGame() {

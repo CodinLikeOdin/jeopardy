@@ -223,6 +223,19 @@ input[type="text"]:focus { outline: none; border-color: #F5A623; }
   font-size: 0.9rem;
   color: #000;
 }
+.player-chip-ready { box-shadow: 0 0 0 3px #2ecc71; }
+
+/* Lobby video + setup ready panel */
+.lobby-room { max-width: 860px; margin: 14px auto 0; }
+.lobby-room-row { display: flex; flex-direction: column; gap: 6px; align-items: center; margin-bottom: 12px; }
+.lobby-room-row .rv-input { max-width: 420px; }
+.setup-players { margin-top: 6px; }
+.setup-players-head { color: #F5A623; font-weight: 800; margin-bottom: 6px; text-align: center; }
+.setup-players-empty { color: #9aa3c7; font-size: 0.9rem; }
+.lobby-video-wrap { position: relative; width: 100%; max-width: 96vw; margin: 8px auto; }
+.lobby-video { width: 100%; max-height: 70vh; border-radius: 12px; border: 3px solid #F5A623; background: #000; display: block; }
+.lobby-unmute { position: absolute; bottom: 12px; right: 12px; }
+body.tv-mode .lobby-video { max-height: 82vh; }
 
 /* Avatars (rectangular) */
 .avatar {

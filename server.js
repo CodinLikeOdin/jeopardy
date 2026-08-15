@@ -14,6 +14,16 @@ const io = new Server(server);
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+// Lobby videos: any .mp4/.webm dropped into public/videos/ is offered to the
+// host as a lobby background video (served statically at /videos/<name>).
+app.get('/api/videos', (req, res) => {
+  try {
+    const dir = path.join(__dirname, 'public', 'videos');
+    const files = fs.readdirSync(dir).filter(f => /\.(mp4|webm|mov|m4v)$/i.test(f));
+    res.json({ videos: files });
+  } catch (e) { res.json({ videos: [] }); }
+});
+
 // Host operator URL — serves the same SPA; the client detects the /host path
 // and runs in host mode (no host/player choice on the shared player link).
 app.get('/host', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
@@ -797,6 +807,7 @@ let gameState = {
   dailyDoubleWager: null,
   hostId: null,
   boardControl: null,
+  lobbyVideo: null,          // filename in public/videos to play in the lobby (host-chosen)
   settings: defaultSettings(),
   usedSquares: { single: {}, double: {} },
   criteria: { single: {}, double: {} },   // name -> generation criteria (for regen)
@@ -1518,9 +1529,25 @@ io.on('connection', (socket) => {
       const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
       const usedColors = Object.values(gameState.players).map(p => p.color);
       const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
-      gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost };
+      gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost, ready: false };
     }
     socket.emit('joined', { id: socket.id });
+    broadcastState();
+  });
+
+  // Contestant toggles their "ready" status in the lobby.
+  socket.on('setReady', ({ ready } = {}) => {
+    const p = gameState.players[socket.id];
+    if (!p || p.isHost) return;
+    p.ready = !!ready;
+    broadcastState();
+  });
+
+  // Host picks which lobby video plays (a filename from public/videos, or null).
+  socket.on('setLobbyVideo', ({ name } = {}) => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const clean = (name && /^[\w .()\-]+\.(mp4|webm|mov|m4v)$/i.test(name)) ? name : null;
+    gameState.lobbyVideo = clean;
     broadcastState();
   });
 
