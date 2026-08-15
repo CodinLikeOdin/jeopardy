@@ -1759,8 +1759,13 @@ function renderQuestionModal() {
       if (q.media.type === 'image') {
         mediaEl.innerHTML = `<img class="modal-media-img" src="${src}" alt="clue image">`;
       } else {
-        mediaEl.innerHTML = `<audio class="modal-media-aud" controls src="${src}"></audio>`
-          + `<button class="btn btn-sm btn-secondary modal-media-replay" onclick="playClueMediaAudio()">🔁 Replay clip</button>`;
+        // Only the host gets the scrub/controls bar + replay button. Contestants
+        // still get the (invisible, no-controls) element so they HEAR the clip.
+        const controlsAttr = isHost ? 'controls' : '';
+        const replayBtn = isHost
+          ? `<button class="btn btn-sm btn-secondary modal-media-replay" onclick="playClueMediaAudio()">🔁 Replay clip</button>`
+          : '';
+        mediaEl.innerHTML = `<audio class="modal-media-aud" ${controlsAttr} src="${src}"></audio>` + replayBtn;
         setupClueMediaAudio(mediaEl.querySelector('.modal-media-aud'));
       }
     } else {
