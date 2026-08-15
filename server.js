@@ -1803,7 +1803,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('beginRounds', () => {
-    if (socket.id !== gameState.hostId || gameState.phase !== 'review') return;
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    if (gameState.phase !== 'review') return;
     gameState.phase = 'single';
     // Seed board control ONCE at the first round's start: a random contestant
     // "has the board." Thereafter it passes to whoever last answers correctly.

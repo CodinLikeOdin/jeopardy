@@ -1994,6 +1994,7 @@ function regenerateFinal() {
 }
 
 function beginRounds() {
+  ensureHostBound();   // re-claim host first if our socket drifted, else the emit is dropped
   if (reviewEditTimer) { clearTimeout(reviewEditTimer); reviewEditTimer = null; }
   socket.emit('editFinal', currentReviewFields());   // flush any pending edit
   socket.emit('beginRounds');
