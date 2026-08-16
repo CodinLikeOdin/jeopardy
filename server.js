@@ -2197,10 +2197,10 @@ io.on('connection', (socket) => {
     if (penalty) {
       const locked = lockUntil[socket.id] && nowSrv < lockUntil[socket.id];
       // Pressed before buzzers armed, or during a personal lockout → penalize.
-      // Every such press RESETS the lockout, so mashing keeps you frozen.
+      // A press only STARTS a lockout; further presses while already locked are
+      // ignored (they don't extend it), so mashing can't keep you frozen.
       if (early || locked) {
-        lockUntil[socket.id] = nowSrv + LOCKOUT_MS;
-        broadcastState();
+        if (!locked) { lockUntil[socket.id] = nowSrv + LOCKOUT_MS; broadcastState(); }
         return;
       }
     } else if (early) {

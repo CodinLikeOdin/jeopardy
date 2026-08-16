@@ -1216,8 +1216,9 @@ function updateBuzzButton() {
   } else if (buzzPending) {
     btn.disabled = true; btn.textContent = 'BUZZING…';
   } else if (arm != null && now < arm) {
-    // Pre-arm: pressable, but pressing now penalizes you (anti-mash)
-    btn.disabled = false; btn.textContent = 'WAIT…';
+    // Pre-arm: DISABLED so eager taps can't rack up early-buzz lockouts. It
+    // flips to an enabled "BUZZ IN" the instant buzzers arm (ticker, ~80ms).
+    btn.disabled = true; btn.textContent = 'WAIT…';
   } else {
     btn.disabled = false; btn.textContent = 'BUZZ IN';
   }
@@ -1498,10 +1499,10 @@ function render() {
   const hr = document.getElementById('hostHardReset');
   if (hr) hr.classList.toggle('hidden', !isHost);
 
-  // TV Mode toggle: available to the host in any phase (and to any device that
-  // already has it on, so a cast phone can turn it back off).
+  // TV Mode toggle: host only (it's a host/cast tool). Contestants never see it
+  // — it was overlapping a category name on their board.
   const tv = document.getElementById('tvToggle');
-  if (tv) tv.classList.toggle('hidden', !(isHost || document.body.classList.contains('tv-mode')));
+  if (tv) tv.classList.toggle('hidden', !isHost);
 
   // Keep the "Clear Players" button labeled with the current roster size.
   const cpb = document.getElementById('clearPlayersBtn');
@@ -1796,6 +1797,7 @@ function renderQuestionModal() {
   //    locked in, or a daily double whose wager is set and reading is done)
   const answerEl = document.getElementById('modalAnswer');
   const hostJudging = isHost && (hasTopBuzzer || ddReadyToJudge);
+  const answerShown = revealed || hostJudging;
   if (revealed) {
     answerEl.textContent = 'Answer: ' + q.answer;
     answerEl.classList.remove('hidden');
@@ -1805,6 +1807,9 @@ function renderQuestionModal() {
   } else {
     answerEl.classList.add('hidden');
   }
+  // In TV mode, shrink the clue image once the answer is up so the answer
+  // stays on-screen instead of being pushed below the fold.
+  modal.classList.toggle('answer-shown', answerShown);
 
   // Daily double section
   const ddSection = document.getElementById('dailyDoubleSection');

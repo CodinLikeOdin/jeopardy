@@ -1200,6 +1200,8 @@ body.tv-mode .modal-media-img {
   max-width: 92vw;
   border-width: 4px;
 }
+/* Once the answer is revealed, shrink the image so the answer stays on-screen. */
+body.tv-mode #questionModal.answer-shown .modal-media-img { max-height: 40vh; }
 body.tv-mode #modalClue    { font-size: clamp(1.6rem, 3.8vw, 3.2rem); padding: 1.4vh 2vw; }
 body.tv-mode #modalCategory { font-size: clamp(1.4rem, 3.2vw, 2.6rem); }
 body.tv-mode #modalValue    { font-size: clamp(2rem, 5vw, 4.2rem); }
