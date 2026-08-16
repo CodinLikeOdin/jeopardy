@@ -805,6 +805,13 @@ let gameState = {
   audioStartTime: null,    // server-clock ms when audio should start on all devices
   buzzArmTime: null,       // (legacy — no longer used for gating)
   buzzDeadline: null,      // server-clock ms the no-buzz countdown expires (drives the visible timer)
+  buzzCountdownStart: null, // server-clock ms the countdown should BECOME VISIBLE.
+                           // readCurrentClue returns the narration END as a future
+                           // timestamp and we broadcast immediately, so buzzDeadline
+                           // is known while the clue is still being read. Without
+                           // this the client showed the timer from the moment the
+                           // clue appeared, starting at buzzTimeout PLUS whatever
+                           // narration was left — a different number every clue.
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -884,6 +891,7 @@ function reopenBuzzers(windowMs) {
   gameState.buzzOpen = true;
   gameState.buzzArmTime = null;
   gameState.buzzDeadline = Date.now() + windowMs;
+  gameState.buzzCountdownStart = Date.now();
   scheduleNoBuzzTimeoutIn(windowMs);
   broadcastState();
 }
@@ -908,7 +916,7 @@ function revealAnswerThenClear() {
   clearQuestionTimeout();
   if (!gameState.currentQuestion) return;
   gameState.buzzOpen = false;
-  gameState.buzzDeadline = null;
+  gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
   gameState.currentQuestion.revealed = true;
   broadcastState();
 }
@@ -920,7 +928,7 @@ function clearRevealedClue() {
   gameState.currentQuestion = null;
   gameState.audioStartTime = null;
   gameState.buzzArmTime = null;
-  gameState.buzzDeadline = null;
+  gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
   currentAudio = null;
   broadcastState();
   maybeAutoAdvance();     // last square of the round done → advance automatically
@@ -1063,7 +1071,7 @@ function startFinalRound() {
   gameState.buzzOpen = false;
   gameState.audioStartTime = null;
   gameState.buzzArmTime = null;
-  gameState.buzzDeadline = null;
+  gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
   gameState.final = {
     category: fj.category,
     clue: fj.clue,
@@ -2125,7 +2133,7 @@ io.on('connection', (socket) => {
     gameState.buzzOpen = !isDailyDouble;
     gameState.audioStartTime = null;
     gameState.buzzArmTime = null;
-    gameState.buzzDeadline = null;    // the visible countdown starts once the clue finishes presenting
+    gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;    // the visible countdown starts once the clue finishes presenting
     gameState.dailyDoubleWager = null;
     broadcastState();
 
@@ -2150,6 +2158,7 @@ io.on('connection', (socket) => {
     } else {
       const startAt = Math.max(Date.now(), clueEnd);       // narration end
       gameState.buzzDeadline = startAt + gameState.settings.buzzTimeoutMs;
+      gameState.buzzCountdownStart = startAt;   // narration end, not now
       scheduleNoBuzzTimeoutIn(gameState.buzzDeadline - Date.now());
     }
     broadcastState();
@@ -2164,6 +2173,7 @@ io.on('connection', (socket) => {
     q.awaitingMediaEnd = false;
     if (gameState.buzzOpen && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
       gameState.buzzDeadline = Date.now() + gameState.settings.buzzTimeoutMs;
+      gameState.buzzCountdownStart = Date.now();   // the clip just ended
       scheduleNoBuzzTimeoutIn(gameState.settings.buzzTimeoutMs);
     }
     broadcastState();
@@ -2200,7 +2210,7 @@ io.on('connection', (socket) => {
     // wins fairly despite lag; a short settle window collects them.
     const orderTs = (typeof ts === 'number') ? ts : Date.now();
     if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
-    gameState.buzzDeadline = null;    // someone buzzed → stop the no-buzz countdown
+    gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;    // someone buzzed → stop the no-buzz countdown
     pendingBuzzes.push({ id: socket.id, name: player.name, ts: orderTs });
     if (!buzzSettleHandle) buzzSettleHandle = setTimeout(finalizeBuzz, SETTLE_MS);
     broadcastState();
@@ -2236,7 +2246,7 @@ io.on('connection', (socket) => {
     const wrongName = gameState.players[playerId] ? gameState.players[playerId].name : '';
     io.emit('wrongAnswer', { name: wrongName, lost: value });
     gameState.buzzOpen = false;           // closed during the 2s "Incorrect" flash
-    gameState.buzzDeadline = null;
+    gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
     clearQuestionTimeout();
     broadcastState();
 
@@ -2305,7 +2315,7 @@ io.on('connection', (socket) => {
     gameState.buzzOpen = false;
     gameState.audioStartTime = null;
     gameState.buzzArmTime = null;
-    gameState.buzzDeadline = null;
+    gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
     gameState.dailyDoubles = [];
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;

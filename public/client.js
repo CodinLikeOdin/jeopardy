@@ -1126,18 +1126,26 @@ function tickModal() {
   const canBuzzPhase = state.buzzOpen && !hasTopBuzzer && !q.revealed && !q.isDailyDouble;
   const rs = document.getElementById('readingStatus');
   const cd = document.getElementById('buzzCountdown');
-  // The countdown appears once the clue has finished presenting (buzzDeadline set).
+  // The countdown appears once the clue has finished BEING READ — not merely
+  // once buzzDeadline is known. The server computes the deadline from the
+  // narration's end, which is a future timestamp, and broadcasts it right away;
+  // showing the timer then meant it opened at buzzTimeout plus whatever
+  // narration remained, so it began on a different number for every clue and
+  // only reached the configured value as the reading finished. buzzCountdownStart
+  // is that moment, so the timer now appears exactly then, at its full value.
+  const countdownLive =
+    state.buzzCountdownStart != null && now >= state.buzzCountdownStart && state.buzzDeadline;
   if (cd) {
-    if (canBuzzPhase && state.buzzDeadline) {
+    if (canBuzzPhase && countdownLive) {
       const secs = Math.max(0, Math.ceil((state.buzzDeadline - now) / 1000));
       cd.classList.remove('hidden');
       cd.textContent = '⏱ ' + secs;
       cd.classList.toggle('cd-urgent', secs <= 3);
     } else { cd.classList.add('hidden'); }
   }
-  // "BUZZ IN!" prompt while buzzing is open but the countdown hasn't started yet.
+  // "BUZZ IN!" prompt while buzzing is open but the countdown has not started.
   if (rs) {
-    if (canBuzzPhase && !state.buzzDeadline && !banned) {
+    if (canBuzzPhase && !countdownLive && !banned) {
       rs.classList.remove('hidden'); rs.textContent = '🔔 BUZZ IN!';
     } else { rs.classList.add('hidden'); }
   }
