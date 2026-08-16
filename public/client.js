@@ -1103,7 +1103,6 @@ function tickModal() {
   const q = state.currentQuestion;
   const now = serverNow();
   const audioStarted = state.audioStartTime != null && now >= state.audioStartTime;
-  const armed = state.buzzArmTime != null && now >= state.buzzArmTime;
   const hasTopBuzzer = state.buzzers && state.buzzers.length > 0;
   // Judging: someone buzzed and the host hasn't ruled yet → show photos + scores
   const judging = hasTopBuzzer && !q.revealed && !q.isDailyDouble;
@@ -1121,15 +1120,26 @@ function tickModal() {
   const mediaEl = document.getElementById('modalMedia');
   if (mediaEl) mediaEl.classList.toggle('hidden', !(q.media && showClue));
 
-  // "BUZZ NOW!" cue — hidden for a player who already answered wrong (they only
-  // see the clue while the others get their chance)
+  // Buzz-in cue + the visible "running out of time" countdown. A player who
+  // already answered wrong is out, so they see neither.
   const banned = (q.bannedPlayers || []).includes(myId);
+  const canBuzzPhase = state.buzzOpen && !hasTopBuzzer && !q.revealed && !q.isDailyDouble;
   const rs = document.getElementById('readingStatus');
-  if (armed && !hasTopBuzzer && !q.revealed && !q.isDailyDouble && !banned) {
-    rs.classList.remove('hidden');
-    rs.textContent = '🔔 BUZZ NOW!';
-  } else {
-    rs.classList.add('hidden');
+  const cd = document.getElementById('buzzCountdown');
+  // The countdown appears once the clue has finished presenting (buzzDeadline set).
+  if (cd) {
+    if (canBuzzPhase && state.buzzDeadline) {
+      const secs = Math.max(0, Math.ceil((state.buzzDeadline - now) / 1000));
+      cd.classList.remove('hidden');
+      cd.textContent = '⏱ ' + secs;
+      cd.classList.toggle('cd-urgent', secs <= 3);
+    } else { cd.classList.add('hidden'); }
+  }
+  // "BUZZ IN!" prompt while buzzing is open but the countdown hasn't started yet.
+  if (rs) {
+    if (canBuzzPhase && !state.buzzDeadline && !banned) {
+      rs.classList.remove('hidden'); rs.textContent = '🔔 BUZZ IN!';
+    } else { rs.classList.add('hidden'); }
   }
 
   updateBuzzButton();
@@ -1177,9 +1187,9 @@ function renderJudgingPanel() {
     `<div class="jp-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr)">${cells}</div>${hostBar}`;
 }
 
-// The buzz button is rendered from authoritative server state plus the synced
-// clock. Pressing before buzzArmTime (or during a lockout) is allowed but
-// penalized server-side — that's the anti-mash mechanic.
+// The buzz button is rendered from authoritative server state. Buzzing is open
+// from the moment the clue displays — no arm-time, no penalty, no lockout;
+// first to buzz wins, and everyone else's button hides until the host reopens.
 function updateBuzzButton() {
   const btn = document.getElementById('buzzBtn');
   if (!btn) return;
@@ -1197,31 +1207,18 @@ function updateBuzzButton() {
   }
 
   const buzzers = state.buzzers || [];
-  const iAmBuzzer = buzzers.some(b => b.id === myId);
   if (buzzers.length > 0) {
-    // Someone won the buzz
-    if (iAmBuzzer) { btn.classList.remove('hidden'); btn.disabled = true; btn.textContent = 'BUZZED!'; }
+    // Someone won this attempt: the winner sees "Buzzed In", everyone else's
+    // button goes away until the host reopens (after a wrong answer).
+    if (buzzers[0].id === myId) { btn.classList.remove('hidden'); btn.disabled = true; btn.textContent = '🔔 Buzzed In'; }
     else btn.classList.add('hidden');
     return;
   }
 
+  // Open from the moment the clue displays — no arm-time, no penalty, no lockout.
   btn.classList.remove('hidden');
-
-  const now = serverNow();
-  const arm = state.buzzArmTime;
-  const myLock = (state.lockUntil && state.lockUntil[myId]) || 0;
-
-  if (myLock && now < myLock) {
-    btn.disabled = true; btn.textContent = 'TOO EARLY!';
-  } else if (buzzPending) {
-    btn.disabled = true; btn.textContent = 'BUZZING…';
-  } else if (arm != null && now < arm) {
-    // Pre-arm: DISABLED so eager taps can't rack up early-buzz lockouts. It
-    // flips to an enabled "BUZZ IN" the instant buzzers arm (ticker, ~80ms).
-    btn.disabled = true; btn.textContent = 'WAIT…';
-  } else {
-    btn.disabled = false; btn.textContent = 'BUZZ IN';
-  }
+  if (buzzPending) { btn.disabled = true; btn.textContent = 'BUZZING…'; }
+  else { btn.disabled = false; btn.textContent = 'BUZZ IN'; }
 }
 
 // ── Render ───────────────────────────────────────────────────
@@ -1886,6 +1883,10 @@ function renderQuestionModal() {
       <button class="award-btn award-correct" onclick="awardPoints('${judgeId}', true)">✓ Correct (+$${judgeValue})</button>
       <button class="award-btn award-wrong" onclick="awardPoints('${judgeId}', false)">✗ Wrong (-$${judgeValue})</button>
     `;
+  } else if (isHost && !revealed && !q.isDailyDouble) {
+    // Clue is live with nobody buzzed in — host can end it whenever.
+    hqc.classList.remove('hidden');
+    awardContainer.innerHTML = `<button class="btn btn-secondary" onclick="hostReveal()">Reveal answer →</button>`;
   } else {
     hqc.classList.add('hidden');
     awardContainer.innerHTML = '';
@@ -2697,6 +2698,7 @@ function selectSquare(round, category, valueIndex) {
 
 // Host dismisses a revealed clue and moves to the next one.
 function nextClue() { ensureHostBound(); socket.emit('nextClue'); }
+function hostReveal() { ensureHostBound(); socket.emit('hostReveal'); }
 
 function awardPoints(playerId, correct) {
   ensureHostBound();
@@ -2798,17 +2800,12 @@ function crownWinner() { socket.emit('crownWinner'); }
 // ── Player Actions ────────────────────────────────────────────
 function buzz() {
   if (!state || !state.currentQuestion || !state.buzzOpen) return;
-  const armed = state.buzzArmTime != null && serverNow() >= state.buzzArmTime;
-  // Send my best estimate of the current SERVER time so buzzes are compared on
-  // a common clock. Pressing early is allowed but the server will penalize it.
+  if (buzzPending) return;
+  // Send my synced SERVER-time estimate so the EARLIEST buzz wins fairly.
   socket.emit('buzz', { ts: serverNow() });
-  if (armed) {
-    buzzPending = true;            // optimistic only for real (armed) buzzes
-    updateBuzzButton();
-    setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 600);
-  } else {
-    updateBuzzButton();           // pre-arm press → will show TOO EARLY from state
-  }
+  buzzPending = true;             // optimistic "BUZZING…" until the next state
+  updateBuzzButton();
+  setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 800);
 }
 
 // ── Utils ─────────────────────────────────────────────────────

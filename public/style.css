@@ -582,6 +582,25 @@ body.tv-mode .lobby-video { max-height: 82vh; }
   color: #F5A623;
 }
 
+#buzzCountdown {
+  font-size: 2.6rem;
+  font-weight: 900;
+  line-height: 1;
+  padding: 8px 22px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.4);
+  border: 3px solid #F5A623;
+  color: #F5A623;
+  min-width: 90px;
+}
+#buzzCountdown.cd-urgent {
+  color: #ff5a4d;
+  border-color: #ff5a4d;
+  animation: cdpulse 0.5s ease-in-out infinite alternate;
+}
+@keyframes cdpulse { from { transform: scale(1); } to { transform: scale(1.12); } }
+body.tv-mode #buzzCountdown { font-size: 5rem; padding: 10px 34px; min-width: 140px; }
+
 /* Buzzers */
 #buzzers {
   width: 100%;

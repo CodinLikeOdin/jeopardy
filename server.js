@@ -803,7 +803,8 @@ let gameState = {
   buzzers: [],             // [{ id, name, ts }] — the locked-in winner (length 1) when chosen
   buzzOpen: false,
   audioStartTime: null,    // server-clock ms when audio should start on all devices
-  buzzArmTime: null,       // server-clock ms when buzzers go live (audio end / re-arm)
+  buzzArmTime: null,       // (legacy — no longer used for gating)
+  buzzDeadline: null,      // server-clock ms the no-buzz countdown expires (drives the visible timer)
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -837,11 +838,6 @@ function clearQuestionTimeout() {
 
 function clearFinalTimeout() {
   if (finalTimeoutHandle) { clearTimeout(finalTimeoutHandle); finalTimeoutHandle = null; }
-}
-
-// Schedule the "nobody buzzed" timeout to fire `windowMs` after buzzers arm.
-function scheduleNoBuzzTimeout(windowMs) {
-  scheduleNoBuzzTimeoutIn(Math.max(0, gameState.buzzArmTime - Date.now()) + windowMs);
 }
 
 // Reveal the answer `delayMs` from now if nobody has buzzed by then.
@@ -880,14 +876,15 @@ function finalizeBuzz() {
   broadcastState();
 }
 
-// Reopen buzzing for everyone not banned, re-armed at a synced moment.
+// Reopen buzzing for everyone not banned, with a fresh visible countdown.
 function reopenBuzzers(windowMs) {
   lockUntil = {};
   pendingBuzzes = [];
   gameState.buzzers = [];
   gameState.buzzOpen = true;
-  gameState.buzzArmTime = Date.now() + REARM_MS;
-  scheduleNoBuzzTimeout(windowMs);
+  gameState.buzzArmTime = null;
+  gameState.buzzDeadline = Date.now() + windowMs;
+  scheduleNoBuzzTimeoutIn(windowMs);
   broadcastState();
 }
 
@@ -911,6 +908,7 @@ function revealAnswerThenClear() {
   clearQuestionTimeout();
   if (!gameState.currentQuestion) return;
   gameState.buzzOpen = false;
+  gameState.buzzDeadline = null;
   gameState.currentQuestion.revealed = true;
   broadcastState();
 }
@@ -922,6 +920,7 @@ function clearRevealedClue() {
   gameState.currentQuestion = null;
   gameState.audioStartTime = null;
   gameState.buzzArmTime = null;
+  gameState.buzzDeadline = null;
   currentAudio = null;
   broadcastState();
   maybeAutoAdvance();     // last square of the round done → advance automatically
@@ -966,6 +965,7 @@ function resetGame() {
     buzzOpen: false,
     audioStartTime: null,
     buzzArmTime: null,
+    buzzDeadline: null,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -1063,6 +1063,7 @@ function startFinalRound() {
   gameState.buzzOpen = false;
   gameState.audioStartTime = null;
   gameState.buzzArmTime = null;
+  gameState.buzzDeadline = null;
   gameState.final = {
     category: fj.category,
     clue: fj.clue,
@@ -2119,9 +2120,12 @@ io.on('connection', (socket) => {
       bannedPlayers: [],
     };
     gameState.buzzers = [];
-    gameState.buzzOpen = false;       // opens at buzzArmTime
+    // Buzzing opens the INSTANT the clue displays — no arm-time, no penalty,
+    // no lockout. First to buzz wins the attempt.
+    gameState.buzzOpen = !isDailyDouble;
     gameState.audioStartTime = null;
     gameState.buzzArmTime = null;
+    gameState.buzzDeadline = null;    // the visible countdown starts once the clue finishes presenting
     gameState.dailyDoubleWager = null;
     broadcastState();
 
@@ -2134,36 +2138,33 @@ io.on('connection', (socket) => {
     const clueEnd = await readCurrentClue(thisQ);
     if (clueEnd == null) return;       // question changed while awaiting TTS
 
-    gameState.buzzOpen = true;
-    // With the early-buzz penalty ON, buzzers arm when the clue FINISHES.
-    // With it OFF, they arm when the clue starts appearing (buzz any time, no penalty).
-    gameState.buzzArmTime = gameState.settings.enforceEarlyPenalty ? clueEnd : gameState.audioStartTime;
-
-    // Audio/video clue: the uploaded clip plays AFTER the narration reads the
-    // clue text. Let contestants buzz DURING the clip (earliest recorded), and
-    // don't start the no-buzz timer until the host's device reports the clip
-    // finished (clueMediaEnded) — otherwise the timer expires mid-clip and the
-    // answer is revealed before anyone hears it. A long safety net prevents a
-    // hang if that signal never arrives.
+    // Buzzing is already open (since the clue displayed). Start the VISIBLE
+    // no-buzz countdown only once the clue has finished PRESENTING:
+    //  • text clue → when the narration finishes (clueEnd)
+    //  • audio/video → when the host's device reports the clip finished
+    //    (clueMediaEnded); a long safety net prevents a hang if that's lost.
     const isTimedMedia = !!(thisQ.media && (thisQ.media.type === 'audio' || thisQ.media.type === 'video'));
     if (isTimedMedia) {
       thisQ.awaitingMediaEnd = true;
-      scheduleNoBuzzTimeout(MEDIA_SAFETY_MS);
+      scheduleNoBuzzTimeoutIn(MEDIA_SAFETY_MS);
     } else {
-      scheduleNoBuzzTimeout(gameState.settings.buzzTimeoutMs);
+      const startAt = Math.max(Date.now(), clueEnd);       // narration end
+      gameState.buzzDeadline = startAt + gameState.settings.buzzTimeoutMs;
+      scheduleNoBuzzTimeoutIn(gameState.buzzDeadline - Date.now());
     }
     broadcastState();
   });
 
-  // Host's device reports the audio/video clip finished: now start the normal
-  // no-buzz timer (unless someone already buzzed in during the clip).
+  // Host's device reports the audio/video clip finished: now start the visible
+  // no-buzz countdown (unless someone already buzzed in during the clip).
   socket.on('clueMediaEnded', () => {
     if (socket.id !== gameState.hostId) return;
     const q = gameState.currentQuestion;
     if (!q || !q.awaitingMediaEnd) return;
     q.awaitingMediaEnd = false;
     if (gameState.buzzOpen && gameState.buzzers.length === 0 && pendingBuzzes.length === 0) {
-      scheduleNoBuzzTimeoutIn(gameState.settings.buzzTimeoutMs);   // full buzz window starts now that the clip finished
+      gameState.buzzDeadline = Date.now() + gameState.settings.buzzTimeoutMs;
+      scheduleNoBuzzTimeoutIn(gameState.settings.buzzTimeoutMs);
     }
     broadcastState();
   });
@@ -2173,6 +2174,15 @@ io.on('connection', (socket) => {
     if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     if (!gameState.currentQuestion || !gameState.currentQuestion.revealed) return;
     clearRevealedClue();
+  });
+
+  // Host reveals the answer at will (nobody's buzzing, or time to move on).
+  socket.on('hostReveal', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const q = gameState.currentQuestion;
+    if (!q || q.revealed || q.isDailyDouble) return;
+    if (gameState.buzzers.length > 0) return;   // someone's mid-answer; judge them instead
+    revealAnswerThenClear();
   });
 
   // ts = the buzzing client's estimate of current SERVER time (synced clock)
@@ -2185,32 +2195,15 @@ io.on('connection', (socket) => {
     if (gameState.buzzers.some(b => b.id === socket.id)) return;
     if (pendingBuzzes.some(b => b.id === socket.id)) return;   // already in this window
 
-    // Whether the window is open is judged by the SERVER's own clock (robust to
-    // a contestant's clock drift). The client's synced `ts` is used ONLY to
-    // order near-simultaneous buzzes fairly.
-    const nowSrv = Date.now();
-    const orderTs = (typeof ts === 'number') ? ts : nowSrv;
-    const armTime = gameState.buzzArmTime;
-    const penalty = gameState.settings.enforceEarlyPenalty;
-    const early = armTime == null || nowSrv < armTime;
-
-    if (penalty) {
-      const locked = lockUntil[socket.id] && nowSrv < lockUntil[socket.id];
-      // Pressed before buzzers armed, or during a personal lockout → penalize.
-      // A press only STARTS a lockout; further presses while already locked are
-      // ignored (they don't extend it), so mashing can't keep you frozen.
-      if (early || locked) {
-        if (!locked) { lockUntil[socket.id] = nowSrv + LOCKOUT_MS; broadcastState(); }
-        return;
-      }
-    } else if (early) {
-      return; // penalty disabled: buzzing before the window opens is just ignored
-    }
-
-    // Valid buzz — collect for a short settle window, then earliest ts wins.
+    // No arm-time, no penalty, no lockout — buzzing is open from clue display.
+    // The client's synced `ts` orders near-simultaneous buzzes so the EARLIEST
+    // wins fairly despite lag; a short settle window collects them.
+    const orderTs = (typeof ts === 'number') ? ts : Date.now();
     if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
+    gameState.buzzDeadline = null;    // someone buzzed → stop the no-buzz countdown
     pendingBuzzes.push({ id: socket.id, name: player.name, ts: orderTs });
     if (!buzzSettleHandle) buzzSettleHandle = setTimeout(finalizeBuzz, SETTLE_MS);
+    broadcastState();
   });
 
   socket.on('awardPoints', ({ playerId, correct }) => {
@@ -2243,6 +2236,7 @@ io.on('connection', (socket) => {
     const wrongName = gameState.players[playerId] ? gameState.players[playerId].name : '';
     io.emit('wrongAnswer', { name: wrongName, lost: value });
     gameState.buzzOpen = false;           // closed during the 2s "Incorrect" flash
+    gameState.buzzDeadline = null;
     clearQuestionTimeout();
     broadcastState();
 
@@ -2250,8 +2244,8 @@ io.on('connection', (socket) => {
     questionTimeoutHandle = setTimeout(() => {
       questionTimeoutHandle = null;
       if (!gameState.currentQuestion || gameState.currentQuestion !== q) return;
-      if (remaining.length === 0) revealAnswerThenClear();   // nobody left to try
-      else reopenBuzzers(RETRY_TIMEOUT_MS);                   // 3s for the others
+      if (remaining.length === 0) revealAnswerThenClear();          // nobody left to try
+      else reopenBuzzers(gameState.settings.buzzTimeoutMs);         // fresh full countdown for the rest
     }, 2000);
   });
 
@@ -2311,6 +2305,7 @@ io.on('connection', (socket) => {
     gameState.buzzOpen = false;
     gameState.audioStartTime = null;
     gameState.buzzArmTime = null;
+    gameState.buzzDeadline = null;
     gameState.dailyDoubles = [];
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;
