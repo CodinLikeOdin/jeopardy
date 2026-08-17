@@ -601,6 +601,26 @@ body.tv-mode .lobby-video { max-height: 82vh; }
 @keyframes cdpulse { from { transform: scale(1); } to { transform: scale(1.12); } }
 body.tv-mode #buzzCountdown { font-size: 5rem; padding: 10px 34px; min-width: 140px; }
 
+/* TV mode: pin the buzzer to the left edge and the countdown to the right edge,
+   vertically centered, so neither pushes the clue/answer or needs scrolling. */
+body.tv-mode #playerBuzzSection {
+  position: fixed;
+  left: 2.5vw; top: 50%; transform: translateY(-50%);
+  width: auto; margin: 0; z-index: 130;
+}
+body.tv-mode .buzz-btn { max-width: 22vw; padding: 4vh 2vw; font-size: 2.4rem; }
+body.tv-mode #buzzCountdown {
+  position: fixed;
+  right: 2.5vw; top: 50%; transform: translateY(-50%);
+  margin: 0; z-index: 130;
+}
+/* keep the pulse from cancelling the vertical centering */
+body.tv-mode #buzzCountdown.cd-urgent { animation: cdpulse-tv 0.5s ease-in-out infinite alternate; }
+@keyframes cdpulse-tv { from { transform: translateY(-50%) scale(1); } to { transform: translateY(-50%) scale(1.12); } }
+/* narrow the image so it never sits under the fixed side controls */
+body.tv-mode .modal-media-img,
+body.tv-mode #questionModal.answer-shown .modal-media-img { max-width: 74vw; }
+
 /* Buzzers */
 #buzzers {
   width: 100%;
