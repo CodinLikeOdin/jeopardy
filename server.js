@@ -1452,6 +1452,9 @@ function buildCustomCategory(cat) {
   const clues = chosen.map(({ q, idx }) => ({
     clue: q.clue,
     answer: q.answer,
+    // Source reference so a saved board can refresh this clue's text from the
+    // current custom category on load (questions live with the category).
+    custom: { catId: cat.id, qIndex: idx },
     media: q.media ? { type: q.media.type, catId: cat.id, qIndex: idx } : undefined,
   }));
   return { clues };
@@ -1927,6 +1930,25 @@ io.on('connection', (socket) => {
       clearQuestionTimeout();
       clearFinalTimeout();
       gameState.board = b.board;
+      // Refresh custom-category clues from their CURRENT definitions, so edits
+      // to a category show up in every saved board that uses it (questions live
+      // with the category, not the board). Position/values/DDs are preserved.
+      const customById = {};
+      (await readCustom()).forEach(c => { customById[c.id] = c; });
+      for (const round of ['single', 'double']) {
+        const bd = gameState.board[round];
+        if (!bd) continue;
+        for (const name of Object.keys(bd)) {
+          const clues = bd[name];
+          if (!Array.isArray(clues)) continue;
+          clues.forEach(cl => {
+            const ref = cl && (cl.custom || cl.media);   // media clues carry the same catId/qIndex
+            const cat = ref && customById[ref.catId];
+            const src = cat && Array.isArray(cat.questions) && cat.questions[ref.qIndex];
+            if (src) { cl.clue = src.clue; cl.answer = src.answer; }
+          });
+        }
+      }
       gameState.criteria = b.criteria || { single: {}, double: {} };
       gameState.customCats = b.customCats || {};
       gameState.dailyDoubles = b.dailyDoubles || [];
