@@ -1574,11 +1574,46 @@ function render() {
     startGameOverTheme();
   }
 
+  // Full-screen scoreboard: between rounds (everyone), and while a Daily Double
+  // wager is being chosen (contestants/TV only — the host keeps the wager input).
+  const q = state.currentQuestion;
+  const ddWagerPhase = !!(q && q.isDailyDouble && state.dailyDoubleWager == null && !q.revealed);
+  const showScoreboard = !!state.roundBreak || (ddWagerPhase && !isHost);
+  const sbo = document.getElementById('scoreboardOverlay');
+  if (sbo) {
+    sbo.classList.toggle('hidden', !showScoreboard);
+    if (showScoreboard) renderScoreboardOverlay();
+  }
+
   // Tidy up Final/review transient UI state once we leave those phases.
   if (state.phase !== 'review') reviewBuilt = false;
   if (state.phase !== 'final') ensureFinalTicker(false);
   if (state.phase !== 'gameover') stopGameOverTheme();
   if (!state.final) { finalViewSig = ''; finalAudioKey = null; spotBuiltFor = null; stopJingle(); }
+}
+
+// Big full-screen scoreboard — each score boxed in gold like a clue, sized to
+// fill the screen. Shown between rounds and during a Daily Double wager.
+function renderScoreboardOverlay() {
+  const el = document.getElementById('scoreboardOverlay');
+  if (!el) return;
+  const players = Object.entries(state.players || {})
+    .filter(([id, p]) => !p.isHost)
+    .sort((a, b) => b[1].score - a[1].score);
+  const br = state.roundBreak;
+  let title = 'Scores';
+  if (br === 'single') title = 'End of Single Jeopardy';
+  else if (br === 'double') title = 'End of Double Jeopardy';
+  else if (state.currentQuestion && state.currentQuestion.isDailyDouble) title = 'Daily Double';
+  const boxes = players.map(([id, p]) => `
+    <div class="sb-box">
+      <div class="sb-name" style="color:${p.color}">${escHtml(p.name)}</div>
+      <div class="sb-score">$${p.score.toLocaleString()}</div>
+    </div>`).join('') || '<div class="sb-box"><div class="sb-name">No contestants yet</div></div>';
+  const cont = (br && isHost)
+    ? `<button class="btn btn-primary sb-continue" onclick="continueRound()">${br === 'single' ? 'Continue to Double Jeopardy →' : 'Continue to Final Jeopardy →'}</button>`
+    : '';
+  el.innerHTML = `<div class="sb-inner"><h1 class="sb-title">${title}</h1><div class="sb-grid">${boxes}</div>${cont}</div>`;
 }
 
 function showScreen(phase) {
@@ -2718,6 +2753,7 @@ function advanceRound() {
   ensureHostBound();
   socket.emit('advanceRound');
 }
+function continueRound() { ensureHostBound(); socket.emit('continueRound'); }
 
 function resetGame() {
   if (!confirm('Reset the game?')) return;

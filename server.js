@@ -812,6 +812,7 @@ let gameState = {
                            // this the client showed the timer from the moment the
                            // clue appeared, starting at buzzTimeout PLUS whatever
                            // narration was left — a different number every clue.
+  roundBreak: null,        // 'single' | 'double' → show the full-screen scoreboard between rounds
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -944,16 +945,16 @@ function roundComplete(round) {
 }
 // Auto-advance single→double and double→Final when the board is exhausted.
 function maybeAutoAdvance() {
+  // At the end of a round, pause on the full-screen scoreboard (host taps
+  // Continue to move on) instead of jumping straight to the next round.
   if (gameState.phase === 'single' && roundComplete('single')) {
     clearQuestionTimeout();
-    gameState.phase = 'double';
-    gameState.currentQuestion = null;
-    gameState.buzzers = [];
-    gameState.buzzOpen = false;
+    gameState.roundBreak = 'single';
     broadcastState();
   } else if (gameState.phase === 'double' && roundComplete('double')) {
     clearQuestionTimeout();
-    startFinalRound();
+    gameState.roundBreak = 'double';
+    broadcastState();
   }
 }
 
@@ -974,6 +975,7 @@ function resetGame() {
     audioStartTime: null,
     buzzArmTime: null,
     buzzDeadline: null,
+    roundBreak: null,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -2297,6 +2299,23 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Host taps "Continue" on the between-rounds scoreboard → advance for real.
+  socket.on('continueRound', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const br = gameState.roundBreak;
+    if (!br) return;
+    gameState.roundBreak = null;
+    if (br === 'single') {
+      gameState.phase = 'double';
+      gameState.currentQuestion = null;
+      gameState.buzzers = [];
+      gameState.buzzOpen = false;
+      broadcastState();
+    } else if (br === 'double') {
+      startFinalRound();
+    }
+  });
+
   socket.on('resetGame', () => {
     // If our host binding is stale (silent reconnect), nudge a re-join so the
     // client re-claims host and the tap can be retried, instead of no-oping.
@@ -2316,6 +2335,7 @@ io.on('connection', (socket) => {
     gameState.audioStartTime = null;
     gameState.buzzArmTime = null;
     gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
+    gameState.roundBreak = null;
     gameState.dailyDoubles = [];
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;

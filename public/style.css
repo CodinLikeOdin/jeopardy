@@ -621,6 +621,28 @@ body.tv-mode #buzzCountdown.cd-urgent { animation: cdpulse-tv 0.5s ease-in-out i
 body.tv-mode .modal-media-img,
 body.tv-mode #questionModal.answer-shown .modal-media-img { max-width: 74vw; }
 
+/* ── Full-screen scoreboard (between rounds + Daily Double wager) ───────────── */
+#scoreboardOverlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: #060CE9;                 /* Jeopardy blue, like a clue */
+  display: flex; align-items: center; justify-content: center;
+  padding: 3vh 3vw;
+}
+#scoreboardOverlay.hidden { display: none; }
+.sb-inner { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 3vh; }
+.sb-title { font-size: clamp(1.6rem, 5vw, 4rem); color: #F5A623; text-shadow: 2px 2px 0 #000; text-align: center; }
+.sb-grid { display: flex; flex-wrap: wrap; gap: 2vw; justify-content: center; align-items: stretch; width: 100%; }
+.sb-box {
+  flex: 1 1 260px; max-width: 42vw;
+  border: 5px solid #F5A623; border-radius: 16px;   /* gold border, like a clue */
+  background: rgba(0,0,0,0.28);
+  padding: 3vh 2vw;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.4vh;
+}
+.sb-name { font-size: clamp(1.3rem, 4vw, 3rem); font-weight: 900; text-align: center; }
+.sb-score { font-size: clamp(2.4rem, 9vw, 7rem); font-weight: 900; color: #fff; text-shadow: 2px 2px 0 #000; line-height: 1; }
+.sb-continue { font-size: clamp(1rem, 2.6vw, 1.6rem); padding: 1.8vh 3vw; }
+
 /* Buzzers */
 #buzzers {
   width: 100%;
