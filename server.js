@@ -814,6 +814,7 @@ let gameState = {
                            // narration was left — a different number every clue.
   roundBreak: null,        // 'single' | 'double' → show the full-screen scoreboard between rounds
   categoriesRevealed: 0,   // how many category headers are revealed this round (host reveals one at a time)
+  introPlaying: false,     // true right after Start Game while the intro video plays on all screens
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -838,6 +839,7 @@ let buzzSettleHandle = null;
 let questionTimeoutHandle = null;
 let revealTimeoutHandle = null;
 let finalTimeoutHandle = null;  // Final Jeopardy answer-window close
+let introTimeoutHandle = null;  // intro-video safety timer
 
 function clearQuestionTimeout() {
   if (questionTimeoutHandle) { clearTimeout(questionTimeoutHandle); questionTimeoutHandle = null; }
@@ -978,6 +980,7 @@ function resetGame() {
     buzzDeadline: null,
     roundBreak: null,
     categoriesRevealed: 0,
+    introPlaying: false,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -1856,6 +1859,14 @@ io.on('connection', (socket) => {
     if (gameState.phase !== 'review') return;
     gameState.phase = 'single';
     gameState.categoriesRevealed = 0;   // host reveals categories one at a time
+    // Play the intro video on every screen first; the host's device reports when
+    // it ends (introEnded). Safety timer clears it if that signal is lost.
+    gameState.introPlaying = true;
+    if (introTimeoutHandle) clearTimeout(introTimeoutHandle);
+    introTimeoutHandle = setTimeout(() => {
+      introTimeoutHandle = null;
+      if (gameState.introPlaying) { gameState.introPlaying = false; broadcastState(); }
+    }, 40000);
     // Seed board control ONCE at the first round's start: a random contestant
     // "has the board." Thereafter it passes to whoever last answers correctly.
     const contestants = Object.keys(gameState.players);
@@ -2342,6 +2353,13 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Host's device reports the intro video finished → reveal the board.
+  socket.on('introEnded', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    if (introTimeoutHandle) { clearTimeout(introTimeoutHandle); introTimeoutHandle = null; }
+    if (gameState.introPlaying) { gameState.introPlaying = false; broadcastState(); }
+  });
+
   // Host reveals the next category header (one at a time at the round's start).
   socket.on('revealNextCategory', () => {
     if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
@@ -2375,6 +2393,7 @@ io.on('connection', (socket) => {
     gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
     gameState.roundBreak = null;
     gameState.categoriesRevealed = 0;
+    gameState.introPlaying = false;
     gameState.dailyDoubles = [];
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;

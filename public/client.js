@@ -1585,6 +1585,13 @@ function render() {
     if (showScoreboard) renderScoreboardOverlay();
   }
 
+  // Intro video after Start Game (plays once on every screen, then the board).
+  const io = document.getElementById('introOverlay');
+  if (io) {
+    if (state.introPlaying && io.classList.contains('hidden')) { io.classList.remove('hidden'); startIntroVideo(); }
+    else if (!state.introPlaying && !io.classList.contains('hidden')) { io.classList.add('hidden'); stopIntroVideo(); }
+  }
+
   // Tidy up Final/review transient UI state once we leave those phases.
   if (state.phase !== 'review') reviewBuilt = false;
   if (state.phase !== 'final') ensureFinalTicker(false);
@@ -1615,6 +1622,31 @@ function renderScoreboardOverlay() {
     : '';
   el.innerHTML = `<div class="sb-inner"><h1 class="sb-title">${title}</h1><div class="sb-grid">${boxes}</div>${cont}</div>`;
 }
+
+// Intro video (after Start Game). Plays on every screen; the host's clip end
+// (or a load error) tells the server to reveal the board.
+function startIntroVideo() {
+  const el = document.getElementById('introOverlay');
+  if (!el) return;
+  el.innerHTML = `<video id="introVideo" class="intro-video" src="/videos/trivia-intro.mp4" playsinline autoplay></video>`
+    + (isHost ? `<button class="btn btn-sm btn-secondary intro-skip" onclick="skipIntro()">Skip →</button>` : '');
+  const v = document.getElementById('introVideo');
+  const done = () => { if (isHost) socket.emit('introEnded'); };
+  v.addEventListener('ended', done);
+  v.addEventListener('error', done);            // missing/undecodable → don't hang
+  v.muted = false;
+  v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });   // fall back to muted if autoplay+sound is blocked
+  el.onclick = () => { if (v.muted) { v.muted = false; v.play().catch(() => {}); } };   // tap to unmute
+}
+function stopIntroVideo() {
+  const el = document.getElementById('introOverlay');
+  if (!el) return;
+  const v = document.getElementById('introVideo');
+  if (v) { try { v.pause(); } catch (e) {} }
+  el.onclick = null;
+  el.innerHTML = '';
+}
+function skipIntro() { if (isHost) { ensureHostBound(); socket.emit('introEnded'); } }
 
 function showScreen(phase) {
   const map = {
