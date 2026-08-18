@@ -813,6 +813,7 @@ let gameState = {
                            // clue appeared, starting at buzzTimeout PLUS whatever
                            // narration was left — a different number every clue.
   roundBreak: null,        // 'single' | 'double' → show the full-screen scoreboard between rounds
+  categoriesRevealed: 0,   // how many category headers are revealed this round (host reveals one at a time)
   dailyDoubles: [],
   dailyDoubleWager: null,
   hostId: null,
@@ -976,6 +977,7 @@ function resetGame() {
     buzzArmTime: null,
     buzzDeadline: null,
     roundBreak: null,
+    categoriesRevealed: 0,
     dailyDoubles: [],
     dailyDoubleWager: null,
     hostId: null,
@@ -1853,6 +1855,7 @@ io.on('connection', (socket) => {
     if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
     if (gameState.phase !== 'review') return;
     gameState.phase = 'single';
+    gameState.categoriesRevealed = 0;   // host reveals categories one at a time
     // Seed board control ONCE at the first round's start: a random contestant
     // "has the board." Thereafter it passes to whoever last answers correctly.
     const contestants = Object.keys(gameState.players);
@@ -2332,9 +2335,22 @@ io.on('connection', (socket) => {
       gameState.currentQuestion = null;
       gameState.buzzers = [];
       gameState.buzzOpen = false;
+      gameState.categoriesRevealed = 0;   // reveal Double Jeopardy categories one at a time too
       broadcastState();
     } else if (br === 'double') {
       startFinalRound();
+    }
+  });
+
+  // Host reveals the next category header (one at a time at the round's start).
+  socket.on('revealNextCategory', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const board = gameState.board[gameState.phase];
+    if (!board) return;
+    const total = Object.keys(board).length;
+    if (gameState.categoriesRevealed < total) {
+      gameState.categoriesRevealed++;
+      broadcastState();
     }
   });
 
@@ -2358,6 +2374,7 @@ io.on('connection', (socket) => {
     gameState.buzzArmTime = null;
     gameState.buzzDeadline = null; gameState.buzzCountdownStart = null;
     gameState.roundBreak = null;
+    gameState.categoriesRevealed = 0;
     gameState.dailyDoubles = [];
     gameState.dailyDoubleWager = null;
     gameState.boardControl = null;

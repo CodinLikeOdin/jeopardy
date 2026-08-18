@@ -440,6 +440,15 @@ body.tv-mode .lobby-video { max-height: 82vh; }
   text-shadow: 1px 1px 2px #000;
 }
 .board-cell:hover { background: #0a0af0; }
+
+/* Unrevealed categories (host reveals them one at a time at round start) */
+.board-cat-hidden, .board-cell-hidden {
+  background: #03073a;
+  border: 2px solid #000;
+  cursor: default;
+}
+.board-cell-hidden { min-height: 70px; }
+.board-cat-hidden { min-height: 60px; }
 .board-cell.used { color: #060CE9; cursor: default; }
 .board-cell.used:hover { background: #060CE9; }
 
@@ -601,25 +610,27 @@ body.tv-mode .lobby-video { max-height: 82vh; }
 @keyframes cdpulse { from { transform: scale(1); } to { transform: scale(1.12); } }
 body.tv-mode #buzzCountdown { font-size: 5rem; padding: 10px 34px; min-width: 140px; }
 
-/* TV mode: pin the buzzer to the left edge and the countdown to the right edge,
-   vertically centered, so neither pushes the clue/answer or needs scrolling. */
-body.tv-mode #playerBuzzSection {
-  position: fixed;
-  left: 2.5vw; top: 50%; transform: translateY(-50%);
-  width: auto; margin: 0; z-index: 130;
-}
-body.tv-mode .buzz-btn { max-width: 22vw; padding: 4vh 2vw; font-size: 2.4rem; }
+/* TV mode: use the empty top/bottom bands — timer centered at the TOP, a big
+   buzz button centered at the BOTTOM — so neither covers the clue. The clue
+   sits in a centered middle band. */
+body.tv-mode .modal-content { max-height: 70vh; }   /* leaves ~15vh top + bottom for the fixed controls */
 body.tv-mode #buzzCountdown {
   position: fixed;
-  right: 2.5vw; top: 50%; transform: translateY(-50%);
+  top: 2vh; left: 50%; transform: translateX(-50%);
   margin: 0; z-index: 130;
 }
-/* keep the pulse from cancelling the vertical centering */
+/* keep the pulse from cancelling the horizontal centering */
 body.tv-mode #buzzCountdown.cd-urgent { animation: cdpulse-tv 0.5s ease-in-out infinite alternate; }
-@keyframes cdpulse-tv { from { transform: translateY(-50%) scale(1); } to { transform: translateY(-50%) scale(1.12); } }
-/* narrow the image so it never sits under the fixed side controls */
+@keyframes cdpulse-tv { from { transform: translateX(-50%) scale(1); } to { transform: translateX(-50%) scale(1.12); } }
+body.tv-mode #playerBuzzSection {
+  position: fixed;
+  bottom: 2.5vh; left: 50%; transform: translateX(-50%);
+  width: auto; margin: 0; z-index: 130;
+}
+body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-size: 3rem; }
+/* the clue can use the full width now that the sides are free */
 body.tv-mode .modal-media-img,
-body.tv-mode #questionModal.answer-shown .modal-media-img { max-width: 74vw; }
+body.tv-mode #questionModal.answer-shown .modal-media-img { max-width: 90vw; max-height: 52vh; }
 
 /* ── Full-screen scoreboard (between rounds + Daily Double wager) ───────────── */
 #scoreboardOverlay {

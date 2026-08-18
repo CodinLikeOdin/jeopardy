@@ -1743,15 +1743,21 @@ function renderGame() {
   boardEl.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
   boardEl.style.gridTemplateRows = `auto repeat(5, 1fr)`;
 
+  // Categories are revealed one at a time at the round's start (host-driven).
+  const revealed = (state.categoriesRevealed != null) ? state.categoriesRevealed : cats.length;
+
   let html = '';
   // Category headers
-  cats.forEach(cat => {
-    html += `<div class="board-cat">${escHtml(cat)}</div>`;
+  cats.forEach((cat, ci) => {
+    html += (ci < revealed)
+      ? `<div class="board-cat">${escHtml(cat)}</div>`
+      : `<div class="board-cat board-cat-hidden"></div>`;
   });
 
   // Value rows
   for (let row = 0; row < 5; row++) {
-    cats.forEach(cat => {
+    cats.forEach((cat, ci) => {
+      if (ci >= revealed) { html += `<div class="board-cell board-cell-hidden"></div>`; return; }
       const key = `${cat}|${row}`;
       const used = state.usedSquares && state.usedSquares[round] && state.usedSquares[round][key];
       const val = values[row];
@@ -1767,6 +1773,14 @@ function renderGame() {
   }
 
   boardEl.innerHTML = html;
+
+  // "Reveal Category" button (host, until all are shown).
+  const rcb = document.getElementById('revealCatBtn');
+  if (rcb) {
+    const more = isHost && revealed < cats.length;
+    rcb.classList.toggle('hidden', !more);
+    if (more) rcb.textContent = `Reveal Category ${revealed + 1} of ${cats.length}`;
+  }
 
   // Question modal
   renderQuestionModal();
@@ -2754,6 +2768,7 @@ function advanceRound() {
   socket.emit('advanceRound');
 }
 function continueRound() { ensureHostBound(); socket.emit('continueRound'); }
+function revealNextCategory() { ensureHostBound(); socket.emit('revealNextCategory'); }
 
 function resetGame() {
   if (!confirm('Reset the game?')) return;
