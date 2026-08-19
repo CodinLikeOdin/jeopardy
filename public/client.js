@@ -499,6 +499,7 @@ function stopJingle() {
   jingleOscs.forEach(o => { try { o.stop(); } catch (e) {} });
   jingleOscs = [];
   if (jingleStopTimer) { clearTimeout(jingleStopTimer); jingleStopTimer = null; }
+  stopFinalMusic();
 }
 
 // Loop the motif to fill the WHOLE answer window, starting at the synced time.
@@ -785,8 +786,36 @@ function scheduleFinalAudio() {
   const mode = voiceMode();
   if (mode === 'browser') speakClue(f.clue, f.audioStartTime);
   else if (mode !== 'off') playClueAudioAt(f.audioStartTime, f.clue);   // elevenlabs (+ browser fallback)
-  // (jingle always plays — it's music, not voice)
-  if (f.jingleStart != null && f.jingleDurationMs) playJingle(f.jingleStart, f.jingleDurationMs);
+  // Think music during the answer countdown: the uploaded final-question track,
+  // synced across devices (falls back to the synth jingle if it can't load).
+  if (f.jingleStart != null && f.jingleDurationMs) playFinalThinkMusic(f.jingleStart, f.jingleDurationMs);
+}
+
+let finalMusicSource = null, finalMusicStopTimer = null;
+function stopFinalMusic() {
+  if (finalMusicSource) { try { finalMusicSource.stop(); } catch (e) {} finalMusicSource = null; }
+  if (finalMusicStopTimer) { clearTimeout(finalMusicStopTimer); finalMusicStopTimer = null; }
+}
+async function playFinalThinkMusic(serverStartTime, durationMs) {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
+  try {
+    const arr = await (await fetch('/final-think.mp3')).arrayBuffer();
+    const buf = await ctx.decodeAudioData(arr);
+    // Bail if we've left the answer stage while decoding.
+    if (!(state && state.final) || ('final|' + state.final.audioStartTime) !== finalAudioKey) return;
+    stopFinalMusic();
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const when = ctx.currentTime + Math.max(0.03, (serverStartTime - serverNow()) / 1000);
+    src.start(when);
+    finalMusicSource = src;
+    // Cut it off when the answer window closes, in case the track is longer.
+    finalMusicStopTimer = setTimeout(stopFinalMusic, Math.max(0, (when - ctx.currentTime) * 1000) + durationMs + 250);
+  } catch (e) {
+    playJingle(serverStartTime, durationMs);   // fall back to the synth think-music
+  }
 }
 
 // ── Winner celebration overlay ──────────────────────────────────────────
