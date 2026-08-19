@@ -121,6 +121,7 @@ let isHost = false;
 let isDisplay = false;        // passive big-screen view: watches like a player, but never joins (no buzzer, not on the scoreboard)
 let myName = null;            // remembered so we can re-join after a reconnect
 let lastHostClaim = 0;        // throttles the host self-heal re-claim
+let lastPlayerClaim = 0;      // throttles the contestant self-heal re-join
 let state = null;
 let buzzPending = false;      // optimistic: emitted a buzz, awaiting next state
 let activeAudioKey = null;    // which question's audio we've already scheduled
@@ -1067,6 +1068,13 @@ socket.on('state', (s) => {
   if (isHost && s.hostId && socket.id && s.hostId !== socket.id && Date.now() - lastHostClaim > 3000) {
     lastHostClaim = Date.now();
     socket.emit('join', { name: 'Host', isHost: true });
+  }
+  // Contestant self-heal: if I've joined but my CURRENT socket isn't in the
+  // roster (silent reconnect gave me a new id), re-join so my player entry —
+  // and my buzzing — is bound to this socket. Throttled to avoid spamming.
+  if (!isHost && !isDisplay && myName && didAuth && s.players && socket.id && !s.players[socket.id] && Date.now() - lastPlayerClaim > 3000) {
+    lastPlayerClaim = Date.now();
+    socket.emit('join', { name: myName, isHost: false });
   }
   updateTitleGate();     // guests wait on the title screen until questions are generated
   if (myId || isDisplay) render();   // a display never joins (no myId) but still renders every broadcast
@@ -2921,8 +2929,10 @@ function crownWinner() { socket.emit('crownWinner'); }
 function buzz() {
   if (!state || !state.currentQuestion || !state.buzzOpen) return;
   if (buzzPending) return;
-  // Send my synced SERVER-time estimate so the EARLIEST buzz wins fairly.
-  socket.emit('buzz', { ts: serverNow() });
+  // Send my synced SERVER-time estimate (earliest wins) AND my name, so the
+  // server can reclaim my player on the spot if my socket reconnected — the
+  // buzz then counts on the FIRST press instead of being dropped.
+  socket.emit('buzz', { ts: serverNow(), name: myName });
   buzzPending = true;             // optimistic "BUZZING…" until the next state
   updateBuzzButton();
   setTimeout(() => { buzzPending = false; updateBuzzButton(); }, 800);

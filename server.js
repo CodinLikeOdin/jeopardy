@@ -876,6 +876,38 @@ function scheduleDailyDoubleTimeout(deadline) {
   }, Math.max(0, deadline - Date.now()));
 }
 
+// Bind a contestant NAME to `socketId`, reclaiming an existing entry (carrying
+// score/photo/Final-slot across a reconnect) or creating a fresh one. Shared by
+// `join` and `buzz`, so a buzz from a reconnected socket still counts on the
+// first press instead of being dropped. Returns the player object.
+function reclaimOrCreatePlayer(socketId, name) {
+  const nm = (name || '').trim();
+  const existingId = Object.keys(gameState.players).find(id =>
+    id !== socketId && !gameState.players[id].isHost &&
+    gameState.players[id].name.toLowerCase() === nm.toLowerCase()
+  );
+  if (existingId) {
+    gameState.players[socketId] = { ...gameState.players[existingId], disconnected: false };
+    delete gameState.players[existingId];
+    if (gameState.boardControl === existingId) gameState.boardControl = socketId;
+    if (photos[existingId]) { photos[socketId] = photos[existingId]; delete photos[existingId]; }
+    const f = gameState.final;
+    if (f) {
+      [f.eligible, f.revealOrder].forEach(arr => { if (!arr) return; const i = arr.indexOf(existingId); if (i >= 0) arr[i] = socketId; });
+      ['wagers', 'answers', 'answered', 'reveal'].forEach(k => {
+        if (f[k] && Object.prototype.hasOwnProperty.call(f[k], existingId)) { f[k][socketId] = f[k][existingId]; delete f[k][existingId]; }
+      });
+      if (f.winnerId === existingId) f.winnerId = socketId;
+    }
+  } else {
+    const colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#e91e63'];
+    const usedColors = Object.values(gameState.players).map(p => p.color);
+    const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
+    gameState.players[socketId] = { name: nm, score: 0, color, isHost: false, ready: false };
+  }
+  return gameState.players[socketId];
+}
+
 // A valid buzz arrived: after a short settle, the earliest synced timestamp wins.
 function finalizeBuzz() {
   buzzSettleHandle = null;
@@ -1520,42 +1552,9 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Reconnect handling: if a player with this name already exists (e.g. their
-    // phone dropped and rejoined with a new socket id), reclaim their entry so
-    // their accumulated score is preserved instead of resetting to zero.
-    const existingId = Object.keys(gameState.players).find(id =>
-      id !== socket.id &&
-      !!gameState.players[id].isHost === !!isHost &&
-      gameState.players[id].name.toLowerCase() === name.trim().toLowerCase()
-    );
-    if (existingId) {
-      gameState.players[socket.id] = { ...gameState.players[existingId], disconnected: false };
-      delete gameState.players[existingId];
-      if (gameState.boardControl === existingId) gameState.boardControl = socket.id;
-      if (photos[existingId]) { photos[socket.id] = photos[existingId]; delete photos[existingId]; } // carry photo across reconnect
-      // If a Final Jeopardy round is live, carry the player's slot to the new id
-      // so wagers/answers/eligibility keep working after a reconnect.
-      const f = gameState.final;
-      if (f) {
-        [f.eligible, f.revealOrder].forEach(arr => {
-          if (!arr) return;
-          const i = arr.indexOf(existingId);
-          if (i >= 0) arr[i] = socket.id;
-        });
-        ['wagers', 'answers', 'answered', 'reveal'].forEach(k => {
-          if (f[k] && Object.prototype.hasOwnProperty.call(f[k], existingId)) {
-            f[k][socket.id] = f[k][existingId];
-            delete f[k][existingId];
-          }
-        });
-        if (f.winnerId === existingId) f.winnerId = socket.id;
-      }
-    } else {
-      const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
-      const usedColors = Object.values(gameState.players).map(p => p.color);
-      const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
-      gameState.players[socket.id] = { name: name.trim(), score: 0, color, isHost: !!isHost, ready: false };
-    }
+    // Reconnect handling: reclaim an existing entry by name (preserving score/
+    // photo/Final slot) or create a fresh one.
+    reclaimOrCreatePlayer(socket.id, name);
     socket.emit('joined', { id: socket.id });
     broadcastState();
   });
@@ -2234,11 +2233,18 @@ io.on('connection', (socket) => {
   });
 
   // ts = the buzzing client's estimate of current SERVER time (synced clock)
-  socket.on('buzz', ({ ts }) => {
+  socket.on('buzz', ({ ts, name }) => {
     const q = gameState.currentQuestion;
     if (!q || q.isDailyDouble || q.revealed || !gameState.buzzOpen) return;
-    const player = gameState.players[socket.id];
-    if (!player) { socket.emit('rejoin'); return; }   // reconnected w/ a new id → re-bind
+    let player = gameState.players[socket.id];
+    if (!player) {
+      // Reconnected with a new socket id → the old binding is stale. Reclaim/
+      // create this contestant FROM THE BUZZ (name travels with it) so their
+      // press still counts instead of being dropped and timing the clue out.
+      if (!name || !String(name).trim()) { socket.emit('rejoin'); return; }
+      player = reclaimOrCreatePlayer(socket.id, name);
+      socket.emit('joined', { id: socket.id });
+    }
     if (q.bannedPlayers.includes(socket.id)) return;          // already answered wrong
     if (gameState.buzzers.some(b => b.id === socket.id)) return;
     if (pendingBuzzes.some(b => b.id === socket.id)) return;   // already in this window
