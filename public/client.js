@@ -1923,15 +1923,23 @@ function renderQuestionModal() {
   const answerShown = revealed || hostJudging;
   if (revealed) {
     answerEl.textContent = 'Answer: ' + q.answer;
-    answerEl.classList.remove('hidden');
+    answerEl.classList.remove('hidden', 'answer-reserved');
   } else if (hostJudging) {
     answerEl.textContent = q.answer;
+    answerEl.classList.remove('hidden', 'answer-reserved');
+  } else if (!q.isDailyDouble && !judging) {
+    // Live clue, answer not shown yet: keep the answer element in the layout
+    // (blank) so the image is sized/positioned identically to the reveal — the
+    // answer band is just reserved-but-empty until it's revealed.
+    answerEl.textContent = '';
     answerEl.classList.remove('hidden');
+    answerEl.classList.add('answer-reserved');
   } else {
     answerEl.classList.add('hidden');
+    answerEl.classList.remove('answer-reserved');
   }
-  // In TV mode, shrink the clue image once the answer is up so the answer
-  // stays on-screen instead of being pushed below the fold.
+  // Keep the image sized to leave room for the answer whether reading or
+  // revealed (so it never spills), and mark the revealed state for other rules.
   modal.classList.toggle('answer-shown', answerShown);
 
   // Daily double section

@@ -628,9 +628,7 @@ body.tv-mode #playerBuzzSection {
   width: auto; margin: 0; z-index: 130;
 }
 body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-size: 3rem; }
-/* the clue can use the full width now that the sides are free */
-body.tv-mode .modal-media-img,
-body.tv-mode #questionModal.answer-shown .modal-media-img { max-width: 90vw; max-height: 52vh; }
+/* (image sizing lives in the consolidated rule below — keep them consistent) */
 
 /* ── Full-screen scoreboard (between rounds + Daily Double wager) ───────────── */
 #scoreboardOverlay {
@@ -1277,13 +1275,18 @@ body.tv-mode .modal-content {
   padding: 2vh 2.5vw;
   gap: 1.4vh;
 }
-body.tv-mode .modal-media-img {
-  max-height: 66vh;
+/* Image is sized the SAME whether reading or revealed — it always leaves room
+   for the (reserved) answer band below, so it never spills during reading. */
+body.tv-mode .modal-media-img,
+body.tv-mode #questionModal.answer-shown .modal-media-img {
+  max-height: 40vh;
   max-width: 92vw;
   border-width: 4px;
 }
-/* Once the answer is revealed, shrink the image so the answer stays on-screen. */
-body.tv-mode #questionModal.answer-shown .modal-media-img { max-height: 40vh; }
+/* Reserve the answer's space during reading so the image sits in the same spot
+   it does at reveal (the band is simply blank until the answer appears). */
+body.tv-mode #modalAnswer.answer-reserved { visibility: hidden; }
+body.tv-mode #modalAnswer, body.tv-mode #modalAnswer.answer-reserved { min-height: 5vh; }
 body.tv-mode #modalClue    { font-size: clamp(1.6rem, 3.8vw, 3.2rem); padding: 1.4vh 2vw; }
 body.tv-mode #modalCategory { font-size: clamp(1.4rem, 3.2vw, 2.6rem); }
 body.tv-mode #modalValue    { font-size: clamp(2rem, 5vw, 4.2rem); }
