@@ -908,6 +908,23 @@ function reclaimOrCreatePlayer(socketId, name) {
   return gameState.players[socketId];
 }
 
+// Before the game starts, everyone's at $0 and a disconnected entry is just a
+// stale roster line (a rename or page refresh) — so we remove it. Mid-game a
+// disconnected player is kept so a reconnect can restore their score.
+function isPreGame() { return ['lobby', 'setup', 'generating', 'review'].includes(gameState.phase); }
+function pruneGhostPlayers() {
+  if (!isPreGame()) return false;
+  let changed = false;
+  for (const id of Object.keys(gameState.players)) {
+    if (gameState.players[id].disconnected) {
+      delete gameState.players[id];
+      if (gameState.boardControl === id) gameState.boardControl = null;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // A valid buzz arrived: after a short settle, the earliest synced timestamp wins.
 function finalizeBuzz() {
   buzzSettleHandle = null;
@@ -1555,6 +1572,7 @@ io.on('connection', (socket) => {
     // Reconnect handling: reclaim an existing entry by name (preserving score/
     // photo/Final slot) or create a fresh one.
     reclaimOrCreatePlayer(socket.id, name);
+    pruneGhostPlayers();   // clear any pre-game disconnected ghosts (e.g. renamed devices)
     socket.emit('joined', { id: socket.id });
     broadcastState();
   });
@@ -2443,10 +2461,17 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    if (gameState.players[socket.id]) {
-      gameState.players[socket.id].disconnected = true;
-      broadcastState();
+    const p = gameState.players[socket.id];
+    if (!p) return;
+    if (isPreGame()) {
+      // Pre-game: just remove them (no score to preserve) so renames/refreshes
+      // don't leave ghost contestants in the roster.
+      delete gameState.players[socket.id];
+      if (gameState.boardControl === socket.id) gameState.boardControl = null;
+    } else {
+      p.disconnected = true;
     }
+    broadcastState();
   });
 });
 
