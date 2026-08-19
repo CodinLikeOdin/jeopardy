@@ -528,6 +528,15 @@ app.get('/api/media/diag', async (req, res) => {
 });
 
 // Diagnostic: is persistent (Gist) storage actually configured on this server?
+// Diagnostic: the current roster with connection status (helps debug ghost /
+// duplicate contestants). No socket ids or secrets.
+app.get('/api/players', (req, res) => {
+  const players = Object.values(gameState.players).map(p => ({
+    name: p.name, isHost: !!p.isHost, disconnected: !!p.disconnected, score: p.score,
+  }));
+  res.json({ phase: gameState.phase, count: players.length, players });
+});
+
 app.get('/api/storage/diag', async (req, res) => {
   let customCount = 0;
   try { customCount = (await readCustom()).length; } catch (e) {}
