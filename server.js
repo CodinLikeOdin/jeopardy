@@ -914,6 +914,15 @@ function reclaimOrCreatePlayer(socketId, name) {
     const color = colors.find(c => !usedColors.includes(c)) || colors[Math.floor(Math.random() * colors.length)];
     gameState.players[socketId] = { name: nm, score: 0, color, isHost: false, ready: false };
   }
+  // Hard guarantee: a name can never appear twice — drop any OTHER same-name
+  // entries (stale sockets/ghosts), migrating board control to the live socket.
+  for (const id of Object.keys(gameState.players)) {
+    if (id !== socketId && !gameState.players[id].isHost && gameState.players[id].name.toLowerCase() === nm.toLowerCase()) {
+      if (gameState.boardControl === id) gameState.boardControl = socketId;
+      if (photos[id]) delete photos[id];
+      delete gameState.players[id];
+    }
+  }
   return gameState.players[socketId];
 }
 
