@@ -616,12 +616,14 @@ body.tv-mode #buzzCountdown { font-size: 5rem; padding: 10px 34px; min-width: 14
 body.tv-mode .modal-content { max-height: 70vh; }   /* leaves ~15vh top + bottom for the fixed controls */
 body.tv-mode #buzzCountdown {
   position: fixed;
-  top: 2vh; left: 50%; transform: translateX(-50%);
+  left: 2vw; top: 50%; transform: translateY(-50%);   /* left side, halfway up */
   margin: 0; z-index: 130;
 }
-/* keep the pulse from cancelling the horizontal centering */
+/* keep the pulse from cancelling the vertical centering */
 body.tv-mode #buzzCountdown.cd-urgent { animation: cdpulse-tv 0.5s ease-in-out infinite alternate; }
-@keyframes cdpulse-tv { from { transform: translateX(-50%) scale(1); } to { transform: translateX(-50%) scale(1.12); } }
+@keyframes cdpulse-tv { from { transform: translateY(-50%) scale(1); } to { transform: translateY(-50%) scale(1.12); } }
+/* reserve a left gutter for the timer so the clue/image never sits under it */
+body.tv-mode .modal { padding-left: 14vw; padding-right: 14vw; }
 body.tv-mode #playerBuzzSection {
   position: fixed;
   bottom: 2.5vh; left: 50%; transform: translateX(-50%);
