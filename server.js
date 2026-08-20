@@ -1093,7 +1093,9 @@ function redactForPlayers(v) {
   v.criteria = { single: {}, double: {} };
   v.dailyDoubles = [];
   if (v.final) {
-    if (v.final.stage !== 'reveal') delete v.final.answer;
+    // The correct response stays hidden until the host reveals it (which they
+    // do after the first contestant's answer is shown, not up front).
+    if (v.final.stage !== 'reveal' || !v.final.answerRevealed) delete v.final.answer;
     v.final.wagers = {};
     v.final.answers = {};
   }
@@ -1166,6 +1168,7 @@ function startFinalRound() {
     reveal: {},                // id -> { wager, answer, judged }
     revealOrder: [],           // eligible ids, fixed lowest->highest at reveal start
     spotlight: 0,              // index into revealOrder: which contestant is on screen
+    answerRevealed: false,     // host reveals the CORRECT response (after the first contestant's, not up front)
     winnerId: null,
     crowned: false,
   };
@@ -2111,6 +2114,16 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // Host reveals the CORRECT response to everyone (done once, after the first
+  // contestant's answer is shown — not at the start of the reveal).
+  socket.on('revealFinalCorrectAnswer', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const f = gameState.final;
+    if (!f || f.stage !== 'reveal' || f.answerRevealed) return;
+    f.answerRevealed = true;
+    broadcastState();
+  });
+
   // Host rules on a revealed answer; the wager is applied to that player's score.
   socket.on('judgeFinal', ({ playerId, correct }) => {
     if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
@@ -2268,6 +2281,19 @@ io.on('connection', (socket) => {
     const q = gameState.currentQuestion;
     if (!q || q.revealed || q.isDailyDouble) return;
     if (gameState.buzzers.length > 0) return;   // someone's mid-answer; judge them instead
+    revealAnswerThenClear();
+  });
+
+  // Host voids the current clue: reveal the answer and move on WITHOUT awarding
+  // or deducting points from anyone (e.g. a bad clue, or a buzz to throw out).
+  socket.on('skipQuestion', () => {
+    if (socket.id !== gameState.hostId) { socket.emit('rejoin'); return; }
+    const q = gameState.currentQuestion;
+    if (!q || q.revealed) return;
+    clearQuestionTimeout();
+    if (buzzSettleHandle) { clearTimeout(buzzSettleHandle); buzzSettleHandle = null; }
+    pendingBuzzes = [];
+    gameState.buzzers = [];          // drop whoever was locked in — no scoring either way
     revealAnswerThenClear();
   });
 

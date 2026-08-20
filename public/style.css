@@ -709,6 +709,8 @@ body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-
 }
 .award-correct { background: #2ecc71; }
 .award-wrong { background: #e74c3c; color: #fff; }
+/* Neutral third option: void the clue, nobody gains or loses points */
+.award-skip { background: #7f8c9a; color: #fff; }
 
 /* Buzz Button */
 .buzz-btn {
@@ -1009,6 +1011,13 @@ body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-
   padding: 10px 16px;
   border-radius: 8px;
   width: 100%;
+}
+/* Host-only preview of the correct response before it's shown to the room */
+.final-answer-private {
+  color: #F5A623;
+  border: 1px dashed rgba(245,166,35,0.7);
+  opacity: 0.85;
+  font-size: 1rem;
 }
 .final-hint { color: #aac4ff; font-weight: bold; text-align: center; }
 .final-progress { font-weight: bold; color: #F5A623; text-align: center; margin-bottom: 6px; }

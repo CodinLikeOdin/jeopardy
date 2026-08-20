@@ -2045,6 +2045,7 @@ function renderQuestionModal() {
       <strong style="width:100%;text-align:center">Judging: ${escHtml(player ? player.name : '?')}</strong>
       <button class="award-btn award-correct" onclick="awardPoints('${judgeId}', true)">✓ Correct (+$${judgeValue})</button>
       <button class="award-btn award-wrong" onclick="awardPoints('${judgeId}', false)">✗ Wrong (-$${judgeValue})</button>
+      <button class="award-btn award-skip" onclick="skipQuestion()">⤼ Skip Question (no points)</button>
     `;
   } else if (isHost && !revealed && !q.isDailyDouble) {
     // Clue is live with nobody buzzed in — host can end it whenever.
@@ -2411,8 +2412,10 @@ function buildFinalView(f, role) {
       ${role_body}
     </div>`;
   } else if (f.stage === 'reveal') {
+    // The correct response is filled in by updateFinalView once the host
+    // reveals it (the host sees it early, marked private, so they can judge).
     body = `<div class="card final-card final-spotlight-card">
-      <div class="final-answer-reveal">Correct response: ${escHtml(f.answer)}</div>
+      <div id="fCorrectAnswer" class="final-answer-reveal hidden"></div>
       <div id="fSpotlight"></div>
       <div id="fSpotControls" class="spot-controls"></div>
     </div>`;
@@ -2460,6 +2463,19 @@ function updateFinalView(f, role) {
   }
 
   if (f.stage === 'reveal') {
+    // Correct response: public once the host reveals it. The host sees it
+    // beforehand (marked private) since they need it to judge.
+    const ca = document.getElementById('fCorrectAnswer');
+    if (ca) {
+      if (f.answer && (f.answerRevealed || isHost)) {
+        ca.textContent = (f.answerRevealed ? '' : '🔒 ') + 'Correct response: ' + f.answer;
+        ca.classList.remove('hidden');
+        ca.classList.toggle('final-answer-private', !f.answerRevealed);
+      } else {
+        ca.classList.add('hidden');
+      }
+    }
+
     const order = (f.revealOrder && f.revealOrder.length) ? f.revealOrder : f.eligible;
     const idx = Math.min(f.spotlight || 0, order.length - 1);
     const id = order[idx];
@@ -2517,6 +2533,9 @@ function updateFinalView(f, role) {
         else if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
         else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
         else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
+        // Show the correct response to the room once — after the first
+        // contestant's answer is up, before judging them.
+        else if (!f.answerRevealed) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalCorrectAnswer()">Reveal Correct Answer</button>`;
         else if (!judged) ctrls.innerHTML =
           `<button class="award-btn award-correct" onclick="judgeFinal('${id}', true)">✓ Correct</button>
            <button class="award-btn award-wrong" onclick="judgeFinal('${id}', false)">✗ Wrong</button>`;
@@ -2888,6 +2907,11 @@ function selectSquare(round, category, valueIndex) {
 // Host dismisses a revealed clue and moves to the next one.
 function nextClue() { ensureHostBound(); socket.emit('nextClue'); }
 function hostReveal() { ensureHostBound(); socket.emit('hostReveal'); }
+function skipQuestion() {
+  if (!confirm('Skip this clue? The answer is shown and nobody gains or loses points.')) return;
+  ensureHostBound();
+  socket.emit('skipQuestion');
+}
 
 function awardPoints(playerId, correct) {
   ensureHostBound();
@@ -2984,6 +3008,7 @@ function startFinalClue() {
 function beginFinalReveal() { socket.emit('beginFinalReveal'); }
 function revealFinalAnswer(playerId) { socket.emit('revealFinalAnswer', { playerId }); }
 function revealFinalWager(playerId) { socket.emit('revealFinalWager', { playerId }); }
+function revealFinalCorrectAnswer() { ensureHostBound(); socket.emit('revealFinalCorrectAnswer'); }
 function judgeFinal(playerId, correct) { socket.emit('judgeFinal', { playerId, correct }); }
 function nextFinalContestant() { socket.emit('nextFinalContestant'); }
 function crownWinner() { socket.emit('crownWinner'); }
