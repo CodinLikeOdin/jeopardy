@@ -2373,6 +2373,7 @@ io.on('connection', (socket) => {
       gameState.currentQuestion = null;
       gameState.buzzers = [];
       gameState.buzzOpen = false;
+      gameState.categoriesRevealed = 0;   // reveal Double Jeopardy categories one at a time too
     } else if (gameState.phase === 'double') {
       startFinalRound();
       return;

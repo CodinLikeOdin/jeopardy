@@ -1295,6 +1295,22 @@ body.tv-mode #modalClue    { font-size: clamp(1.6rem, 3.8vw, 3.2rem); padding: 1
 body.tv-mode #modalCategory { font-size: clamp(1.4rem, 3.2vw, 2.6rem); }
 body.tv-mode #modalValue    { font-size: clamp(2rem, 5vw, 4.2rem); }
 body.tv-mode #modalAnswer   { font-size: clamp(1.4rem, 3vw, 2.4rem); }
+
+/* ── Daily Double with an image ──────────────────────────────────────────────
+   The gold "DAILY DOUBLE!" banner + wager row add a big block between the
+   image and the answer, which pushed the answer off the bottom. When a DD is
+   showing, tighten that banner and shrink the image/value so the whole clue
+   (image → clue → wager → answer) still fits without scrolling. */
+#questionModal.dd-active .modal-media-img { max-height: 30vh; }
+#dailyDoubleSection { padding: 10px 16px; }
+#dailyDoubleSection h3 { font-size: 1.4rem; letter-spacing: 2px; margin-bottom: 6px; }
+
+body.tv-mode #questionModal.dd-active .modal-media-img,
+body.tv-mode #questionModal.dd-active.answer-shown .modal-media-img { max-height: 28vh; }
+body.tv-mode #questionModal.dd-active #modalValue { font-size: clamp(1.5rem, 3.2vw, 2.4rem); }
+body.tv-mode #questionModal.dd-active #modalClue  { font-size: clamp(1.3rem, 2.9vw, 2.4rem); padding: 1vh 2vw; }
+body.tv-mode #dailyDoubleSection { padding: 1vh 2vw; }
+body.tv-mode #dailyDoubleSection h3 { font-size: clamp(1.1rem, 2.4vw, 1.8rem); letter-spacing: 2px; margin-bottom: 4px; }
 body.tv-mode .modal-media-aud { max-width: 60vw; }
 
 /* Host setup: ephemeral-storage warning banner */

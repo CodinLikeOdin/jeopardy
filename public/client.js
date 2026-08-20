@@ -1967,6 +1967,9 @@ function renderQuestionModal() {
   // Keep the image sized to leave room for the answer whether reading or
   // revealed (so it never spills), and mark the revealed state for other rules.
   modal.classList.toggle('answer-shown', answerShown);
+  // A Daily Double adds the gold DD banner + wager row, which eats vertical
+  // space — mark it so the image/value shrink to keep everything on screen.
+  modal.classList.toggle('dd-active', !!q.isDailyDouble);
 
   // Daily double section
   const ddSection = document.getElementById('dailyDoubleSection');
