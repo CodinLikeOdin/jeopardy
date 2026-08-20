@@ -1622,11 +1622,16 @@ function render() {
     if (showScoreboard) renderScoreboardOverlay();
   }
 
-  // Intro video after Start Game (plays once on every screen, then the board).
+  // Full-screen video overlay: intro (after Start Game) or the host-triggered
+  // final video (after gameover). Mutually exclusive in time, so one shared
+  // overlay + one active video at a time.
   const io = document.getElementById('introOverlay');
   if (io) {
-    if (state.introPlaying && io.classList.contains('hidden')) { io.classList.remove('hidden'); startIntroVideo(); }
-    else if (!state.introPlaying && !io.classList.contains('hidden')) { io.classList.add('hidden'); stopIntroVideo(); }
+    const activeSrc = state.introPlaying ? '/videos/trivia-intro.mp4'
+      : state.finalVideoPlaying ? '/videos/happy-birthday-norm.mp4' : null;
+    const activeEnd = state.introPlaying ? 'introEnded' : state.finalVideoPlaying ? 'finalVideoEnded' : null;
+    if (activeSrc && io.classList.contains('hidden')) { io.classList.remove('hidden'); playOverlayVideo(activeSrc, activeEnd); }
+    else if (!activeSrc && !io.classList.contains('hidden')) { io.classList.add('hidden'); stopOverlayVideo(); }
   }
 
   // Tidy up Final/review transient UI state once we leave those phases.
@@ -1660,30 +1665,32 @@ function renderScoreboardOverlay() {
   el.innerHTML = `<div class="sb-inner"><h1 class="sb-title">${title}</h1><div class="sb-grid">${boxes}</div>${cont}</div>`;
 }
 
-// Intro video (after Start Game). Plays on every screen; the host's clip end
-// (or a load error) tells the server to reveal the board.
-function startIntroVideo() {
+// Full-screen video overlay (intro after Start Game, or the host-triggered
+// final video after gameover). Plays on every screen; the host's clip end
+// (or a load error, or the host's Skip button) tells the server to clear it.
+function playOverlayVideo(src, endEvent) {
   const el = document.getElementById('introOverlay');
-  if (!el) return;
-  el.innerHTML = `<video id="introVideo" class="intro-video" src="/videos/trivia-intro.mp4" playsinline autoplay></video>`
-    + (isHost ? `<button class="btn btn-sm btn-secondary intro-skip" onclick="skipIntro()">Skip →</button>` : '');
-  const v = document.getElementById('introVideo');
-  const done = () => { if (isHost) socket.emit('introEnded'); };
+  if (!el || !endEvent) return;
+  el.innerHTML = `<video id="ovVideo" class="intro-video" src="${src}" playsinline autoplay></video>`
+    + (isHost ? `<button class="btn btn-sm btn-secondary intro-skip" onclick="skipOverlayVideo('${endEvent}')">Skip →</button>` : '');
+  const v = document.getElementById('ovVideo');
+  const done = () => { if (isHost) socket.emit(endEvent); };
   v.addEventListener('ended', done);
   v.addEventListener('error', done);            // missing/undecodable → don't hang
   v.muted = false;
   v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });   // fall back to muted if autoplay+sound is blocked
   el.onclick = () => { if (v.muted) { v.muted = false; v.play().catch(() => {}); } };   // tap to unmute
 }
-function stopIntroVideo() {
+function stopOverlayVideo() {
   const el = document.getElementById('introOverlay');
   if (!el) return;
-  const v = document.getElementById('introVideo');
+  const v = document.getElementById('ovVideo');
   if (v) { try { v.pause(); } catch (e) {} }
   el.onclick = null;
   el.innerHTML = '';
 }
-function skipIntro() { if (isHost) { ensureHostBound(); socket.emit('introEnded'); } }
+function skipOverlayVideo(endEvent) { if (isHost) { ensureHostBound(); socket.emit(endEvent); } }
+function playFinalVideo() { ensureHostBound(); socket.emit('playFinalVideo'); }
 
 function showScreen(phase) {
   const map = {
@@ -2043,6 +2050,12 @@ function renderGameOver() {
       <span>$${p.score.toLocaleString()}${p.score === maxScore && i === 0 ? '<span class="winner-crown">👑</span>' : ''}</span>
     </div>
   `).join('');
+  const fvb = document.getElementById('finalVideoBtn');
+  if (fvb) {
+    fvb.classList.toggle('hidden', !isHost);
+    fvb.disabled = !!state.finalVideoPlaying;
+    fvb.textContent = state.finalVideoPlaying ? '🎉 Playing…' : '🎉 Play Final Video';
+  }
 }
 
 // ── Final Jeopardy: review screen ─────────────────────────────
