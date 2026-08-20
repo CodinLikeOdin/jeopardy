@@ -2326,6 +2326,7 @@ function ensureFinalTicker(active) {
 
 function myFinalRole(f) {
   if (isHost) return 'host';
+  if (isDisplay) return 'display';   // passive big screen — never a contestant, so no "you" messaging
   return f.eligible.includes(myId) ? 'player' : 'spectator';
 }
 
@@ -2377,6 +2378,9 @@ function buildFinalView(f, role) {
             <input id="fWagerInput" class="rv-input" type="number" min="0" max="${max}" value="0">
             <button class="btn btn-primary" onclick="submitFinalWager()">Lock Wager 🔒</button>
           </div>`;
+    } else if (role === 'display') {
+      // The big screen is never a contestant — no "you" messaging, just status.
+      body = `<div class="card final-card center"><h3>Final Jeopardy</h3><p>Contestants are placing their wagers…</p></div>`;
     } else {
       body = `<div class="card final-card center"><h3>Final Jeopardy</h3><p>You're sitting this one out (need a positive score). Enjoy the show!</p></div>`;
     }
@@ -2506,7 +2510,8 @@ function updateFinalView(f, role) {
 
       const ctrls = document.getElementById('fSpotControls');
       if (ctrls) {
-        if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
+        if (isDisplay) ctrls.innerHTML = '';   // big screen: no viewer-status text
+        else if (!isHost) ctrls.innerHTML = '<div class="spot-waiting">Watching…</div>';
         else if (!r.wager) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalWager('${id}')">Reveal Wager</button>`;
         else if (!r.answer) ctrls.innerHTML = `<button class="btn btn-primary" onclick="revealFinalAnswer('${id}')">Reveal Answer</button>`;
         else if (!judged) ctrls.innerHTML =
