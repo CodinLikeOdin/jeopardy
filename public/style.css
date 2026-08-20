@@ -254,7 +254,6 @@ body.tv-mode .lobby-video { max-height: 82vh; }
   border-radius: 6px;
 }
 .player-chip, .score-chip { display: inline-flex; align-items: center; gap: 6px; }
-.fs-name { display: inline-flex; align-items: center; gap: 8px; }
 
 /* Photo capture on landing */
 #photoRow { display: flex; flex-direction: column; align-items: center; gap: 10px; }
@@ -642,10 +641,12 @@ body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-
 #scoreboardOverlay.hidden { display: none; }
 .sb-inner { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 3vh; }
 .sb-title { font-size: clamp(1.6rem, 5vw, 4rem); color: #F5A623; text-shadow: 2px 2px 0 #000; text-align: center; }
-.sb-grid { display: flex; flex-wrap: wrap; gap: 2vw; justify-content: center; align-items: stretch; width: 100%; }
+/* Grid columns are set inline per player count (3 or fewer = one row side by
+   side; 4+ = 2 columns, tiled e.g. 2 on top / 2 on bottom). */
+.sb-grid { display: grid; gap: 2vw; justify-items: stretch; align-items: stretch; width: 100%; }
 .sb-box {
-  flex: 1 1 260px; max-width: 42vw;
-  border: 5px solid #F5A623; border-radius: 16px;   /* gold border, like a clue */
+  min-width: 0;
+  border: 5px solid #F5A623; border-radius: 16px;   /* gold border, like a clue — matches the board */
   background: rgba(0,0,0,0.28);
   padding: 3vh 2vw;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.4vh;
@@ -653,6 +654,13 @@ body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-
 .sb-name { font-size: clamp(1.3rem, 4vw, 3rem); font-weight: 900; text-align: center; }
 .sb-score { font-size: clamp(2.4rem, 9vw, 7rem); font-weight: 900; color: #fff; text-shadow: 2px 2px 0 #000; line-height: 1; }
 .sb-continue { font-size: clamp(1rem, 2.6vw, 1.6rem); padding: 1.8vh 3vw; }
+
+/* Compact variant: embedded inline in a narrow card (e.g. the Final Jeopardy
+   wager form), so vw/vh-relative sizing would be wrong — use fixed rem sizing. */
+.sb-grid.sb-compact { gap: 8px; margin: 4px 0; }
+.sb-grid.sb-compact .sb-box { padding: 8px 10px; border-width: 3px; border-radius: 10px; gap: 2px; }
+.sb-grid.sb-compact .sb-name { font-size: 0.82rem; }
+.sb-grid.sb-compact .sb-score { font-size: 1.3rem; }
 
 /* Intro video overlay (after Start Game) */
 #introOverlay {
@@ -722,19 +730,13 @@ body.tv-mode .buzz-btn { max-width: none; width: 84vw; padding: 3.2vh 4vw; font-
 .buzz-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #8e1a0f; }
 .buzz-btn:disabled { background: #555; box-shadow: 0 6px 0 #333; cursor: not-allowed; }
 
-/* Game over */
-#finalScores { display: flex; flex-direction: column; gap: 10px; width: 100%; margin: 16px 0; }
-.final-score-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 16px;
-  border-radius: 8px;
-  font-weight: bold;
-  color: #000;
-  font-size: 1.1rem;
-}
-.winner-crown { font-size: 1.5rem; margin-left: 8px; }
+/* Game over — tiles reuse the .sb-box/.sb-grid look (see the scoreboard
+   section below) for consistency with the rest of the game. */
+#finalScores { width: 100%; margin: 16px 0; }
+.gs-avatar { margin-bottom: 2px; }
+.gs-avatar .avatar { width: 64px; height: 64px; border: 3px solid #F5A623; border-radius: 10px; }
+.gs-winner { box-shadow: 0 0 24px rgba(245,166,35,0.65); border-color: #fff; }
+.winner-crown { font-size: 1.2rem; margin-left: 6px; }
 
 /* Category row with reroll button */
 .cat-row {

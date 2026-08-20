@@ -1611,11 +1611,16 @@ function render() {
     startGameOverTheme();
   }
 
-  // Full-screen scoreboard: between rounds (everyone), and while a Daily Double
-  // wager is being chosen (contestants/TV only — the host keeps the wager input).
+  // Full-screen scoreboard: between rounds (everyone); while a Daily Double
+  // wager is being chosen (contestants/TV — the host keeps the wager input);
+  // and during Final Jeopardy wagering, but ONLY for viewers who don't have a
+  // wager form of their own (the TV/display, and any ineligible contestant) —
+  // actual wagering players get a compact version inline so they can still type.
   const q = state.currentQuestion;
   const ddWagerPhase = !!(q && q.isDailyDouble && state.dailyDoubleWager == null && !q.revealed);
-  const showScoreboard = !!state.roundBreak || (ddWagerPhase && !isHost);
+  const finalWagerPhase = !!(state.final && state.final.stage === 'wager');
+  const finalWagerSpectator = finalWagerPhase && !isHost && !((state.final.eligible || []).includes(myId));
+  const showScoreboard = !!state.roundBreak || (ddWagerPhase && !isHost) || finalWagerSpectator;
   const sbo = document.getElementById('scoreboardOverlay');
   if (sbo) {
     sbo.classList.toggle('hidden', !showScoreboard);
@@ -1641,8 +1646,25 @@ function render() {
   if (!state.final) { finalViewSig = ''; finalAudioKey = null; spotBuiltFor = null; stopJingle(); }
 }
 
-// Big full-screen scoreboard — each score boxed in gold like a clue, sized to
-// fill the screen. Shown between rounds and during a Daily Double wager.
+// Shared scoreboard tile grid: blue/gold boxes matching the board's visual
+// language, used by the full-screen overlay, the game-over screen, and the
+// compact inline version shown to Final Jeopardy wagering players. Layout
+// rule: 3 or fewer contestants sit side by side (one row); 4+ tile at 2
+// columns (e.g. 2 on top, 2 on bottom).
+function scoreGridHtml(players, { compact = false, boxContent } = {}) {
+  const n = players.length || 1;
+  const cols = n <= 3 ? n : 2;
+  const boxes = players.map(([id, p], i) => boxContent ? boxContent(id, p, i) : `
+    <div class="sb-box">
+      <div class="sb-name" style="color:${p.color}">${escHtml(p.name)}</div>
+      <div class="sb-score">$${p.score.toLocaleString()}</div>
+    </div>`).join('') || '<div class="sb-box"><div class="sb-name">No contestants yet</div></div>';
+  return `<div class="sb-grid${compact ? ' sb-compact' : ''}" style="grid-template-columns:repeat(${Math.max(1, cols)},1fr)">${boxes}</div>`;
+}
+
+// Big full-screen scoreboard — shown between rounds, during a Daily Double
+// wager, and to spectators (TV/display, ineligible contestants) during Final
+// Jeopardy wagering.
 function renderScoreboardOverlay() {
   const el = document.getElementById('scoreboardOverlay');
   if (!el) return;
@@ -1650,19 +1672,16 @@ function renderScoreboardOverlay() {
     .filter(([id, p]) => !p.isHost)
     .sort((a, b) => b[1].score - a[1].score);
   const br = state.roundBreak;
+  const f = state.final;
   let title = 'Scores';
   if (br === 'single') title = 'End of Single Jeopardy';
   else if (br === 'double') title = 'End of Double Jeopardy';
   else if (state.currentQuestion && state.currentQuestion.isDailyDouble) title = 'Daily Double';
-  const boxes = players.map(([id, p]) => `
-    <div class="sb-box">
-      <div class="sb-name" style="color:${p.color}">${escHtml(p.name)}</div>
-      <div class="sb-score">$${p.score.toLocaleString()}</div>
-    </div>`).join('') || '<div class="sb-box"><div class="sb-name">No contestants yet</div></div>';
+  else if (f && f.stage === 'wager') title = 'Final Jeopardy';
   const cont = (br && isHost)
     ? `<button class="btn btn-primary sb-continue" onclick="continueRound()">${br === 'single' ? 'Continue to Double Jeopardy →' : 'Continue to Final Jeopardy →'}</button>`
     : '';
-  el.innerHTML = `<div class="sb-inner"><h1 class="sb-title">${title}</h1><div class="sb-grid">${boxes}</div>${cont}</div>`;
+  el.innerHTML = `<div class="sb-inner"><h1 class="sb-title">${title}</h1>${scoreGridHtml(players)}${cont}</div>`;
 }
 
 // Full-screen video overlay (intro after Start Game, or the host-triggered
@@ -2042,14 +2061,20 @@ function renderQuestionModal() {
 }
 
 function renderGameOver() {
-  const players = Object.entries(state.players || {}).sort((a, b) => b[1].score - a[1].score);
+  const players = Object.entries(state.players || {}).filter(([id, p]) => !p.isHost).sort((a, b) => b[1].score - a[1].score);
   const maxScore = players[0] && players[0][1].score;
-  document.getElementById('finalScores').innerHTML = players.map(([id, p], i) => `
-    <div class="final-score-row" style="background:${p.color}">
-      <span class="fs-name">${avatar(id, p, 36)} ${i+1}. ${escHtml(p.name)}</span>
-      <span>$${p.score.toLocaleString()}${p.score === maxScore && i === 0 ? '<span class="winner-crown">👑</span>' : ''}</span>
-    </div>
-  `).join('');
+  // Same blue/gold tile look as the rest of the game (board cells, full-screen
+  // scoreboard): side by side for 3 or fewer, 2-column tiled for 4+.
+  document.getElementById('finalScores').innerHTML = scoreGridHtml(players, {
+    boxContent: (id, p, i) => {
+      const isWinner = p.score === maxScore && i === 0;
+      return `<div class="sb-box gs-box${isWinner ? ' gs-winner' : ''}">
+        <div class="gs-avatar">${avatar(id, p, 64)}</div>
+        <div class="sb-name" style="color:${p.color}">${i + 1}. ${escHtml(p.name)}${isWinner ? '<span class="winner-crown">👑</span>' : ''}</div>
+        <div class="sb-score">$${p.score.toLocaleString()}</div>
+      </div>`;
+    },
+  });
   const fvb = document.getElementById('finalVideoBtn');
   if (fvb) {
     fvb.classList.toggle('hidden', !isHost);
@@ -2327,9 +2352,17 @@ function buildFinalView(f, role) {
   let body = '';
 
   if (f.stage === 'wager') {
+    // Compact version of the same blue/gold scoreboard tiles, embedded inline
+    // so wagering players can see everyone's scores without losing their
+    // input form (spectators/TV get the full-screen version instead).
+    const wagerScores = scoreGridHtml(
+      Object.entries(state.players || {}).filter(([id, p]) => !p.isHost).sort((a, b) => b[1].score - a[1].score),
+      { compact: true }
+    );
     if (role === 'host') {
       body = `<div class="card final-card">
         <p class="subtitle">Players are placing secret wagers. The clue reveals automatically once everyone has wagered.</p>
+        ${wagerScores}
         <div id="fWagerList"></div>
       </div>`;
     } else if (role === 'player') {
@@ -2339,6 +2372,7 @@ function buildFinalView(f, role) {
         ? `<div class="card final-card center"><h3>Wager locked 🔒</h3><p>Waiting for the clue…</p></div>`
         : `<div class="card final-card">
             <p>Your score: <strong>$${myScore.toLocaleString()}</strong></p>
+            ${wagerScores}
             <label class="rv-label">Your secret wager (0 – $${max.toLocaleString()})</label>
             <input id="fWagerInput" class="rv-input" type="number" min="0" max="${max}" value="0">
             <button class="btn btn-primary" onclick="submitFinalWager()">Lock Wager 🔒</button>
